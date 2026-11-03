@@ -161,7 +161,7 @@ def write_report(cfg, report, evaluation, signal_file, folder):
         'pca': figure(pca_available, 'pca_check.png', 'Mapa PCA disponível após o treino deste bloco.'),
         'matrix': figure(plot_matrix, 'confusion_matrix.png', 'Matriz indisponível até concluir a validação cruzada.'),
         'thresholds': escape(json.dumps(report['thresholds'], ensure_ascii=False)),
-        'unit': escape(report['unit']),
+        'unit': escape('escala original (unidade não informada)' if report['unit'] == 'native' else report['unit']),
         'overview': figure(report['samples'] > 1 and (folder / 'overview.png').exists(), 'overview.png', 'Sem sinal suficiente para gerar os gráficos.'),
         'channels_download': ' &nbsp;·&nbsp; <a href="channels.csv">Tabela CSV</a>' if (folder / 'channels.csv').exists() else '',
     }

@@ -51,14 +51,56 @@ class AcquisitionAndReportTests(unittest.TestCase):
         self.cfg._raw_config['eego'].update(receive_by='index', receive_channels=[64, 1])
         self.assertEqual(stream_layout(self.cfg, eeg_info())[0], [63, 0])
 
-    def test_rejects_wrong_rate_channel_count_missing_units_and_duplicate_selection(self):
+    def test_external_layout_adopts_stream_rate_and_channels(self):
         set_source(self.cfg, 'eego')
-        for info in [eeg_info(rate=512), eeg_info(channels=32), eeg_info(unit='')]:
-            with self.assertRaises(ValueError):
-                stream_layout(self.cfg, info)
-        self.cfg._raw_config['eego'].update(unit='uV', receive_channels=[1, 1])
+        indices, scales, metadata = stream_layout(self.cfg, eeg_info(channels=32, rate=512))
+        self.assertEqual(self.cfg.fs_hz, 512.)
+        self.assertEqual(self.cfg.n_channels, 32)
+        self.assertEqual(len(indices), 32)
+        self.assertTrue(metadata['observations'])
+        self.cfg._raw_config['eego'].update(receive_channels=[1, 1])
         with self.assertRaises(ValueError):
             stream_layout(self.cfg, eeg_info())
+
+    def test_missing_unit_preserves_native_samples_without_blocking_recording(self):
+        set_source(self.cfg, 'eego')
+        indices, scales, metadata = stream_layout(self.cfg, eeg_info(unit=''))
+        self.assertEqual(metadata['unit'], 'native')
+        self.assertIsNone(metadata['scale_to_uV'])
+        np.testing.assert_allclose(scales, 1.)
+        self.assertEqual(len(indices), 64)
+        self.assertTrue(metadata['observations'])
+
+    def test_eego_name_is_preset_and_zero_nominal_rate_uses_profile(self):
+        from bci_core.acquisition import EEGO_STREAM_NAME
+        set_source(self.cfg, 'eego')
+        self.assertEqual(self.cfg.lsl.signal_name, EEGO_STREAM_NAME)
+        self.assertEqual(stream_layout(self.cfg, eeg_info(rate=0))[2]['fs_hz'], 500.)
+
+    def test_native_unit_does_not_apply_microvolt_amplitude_limits(self):
+        self.cfg.runtime.source = 'eego'
+        self.cfg._recorded_unit = 'native'
+        self.cfg._recorded_channel_count = 2
+        t = np.arange(2048)/self.cfg.fs_hz
+        X = np.random.default_rng(4).normal(size=(len(t), 2)) * 1e-6
+        result, *_ = inspect_quality(t, X, ['a','b'], np.array([0.,7.]), ['BASELINE','BLOCK_END'], self.cfg)
+        self.assertNotIn('canal plano', result['channels'][0]['reasons'])
+        self.assertEqual(result['unit'], 'native')
+
+    def test_stream_without_source_id_is_read_without_requesting_auto_recovery(self):
+        import threading
+        from unittest.mock import Mock, patch
+        from bci_core.receive_data_log import resolve_signal
+        set_source(self.cfg, 'eego')
+        info = Mock()
+        info.type.return_value = 'EEG'
+        info.name.return_value = self.cfg.lsl.signal_name
+        info.source_id.return_value = ''
+        info.uid.return_value = 'current-provider'
+        with patch('bci_core.receive_data_log.resolve_byprop', return_value=[info]), patch('bci_core.receive_data_log.StreamInlet') as inlet:
+            resolve_signal(self.cfg, threading.Event())
+        self.assertFalse(inlet.call_args.kwargs['recover'])
+        self.assertEqual(self.cfg._signal_uid, 'current-provider')
 
     def test_recording_metadata_restores_actual_rate_for_analysis(self):
         with tempfile.TemporaryDirectory() as root:

@@ -20,10 +20,14 @@ from .data import read_signal_csv, read_markers_csv
 def inspect_quality(times, X, names, marker_times, labels, cfg):
     q = cfg._raw_config.get('quality', {})
     issues = []
-    observations = []
+    observations = list(getattr(cfg, '_stream_observations', []))
     simulated = source_name(cfg) == 'simulator'
     if simulated:
         observations.append('Sinal simulado: ruído branco e bursts sintéticos não reproduzem um EEG. Métricas espectrais são informativas, sem alertas fisiológicos.')
+    unit = 'a.u.' if simulated else getattr(cfg, '_recorded_unit', q.get('unit', 'uV'))
+    absolute = unit == 'uV'
+    peak_limit = q.get('peak_to_peak_limit', 200.) if absolute else float('inf')
+    flat_limit = q.get('flat_std_limit', .01) if absolute else 0.
     fs = cfg.fs_hz
     if len(times) < 2:
         raise ValueError('Gravação sem amostras suficientes para análise.')
@@ -77,7 +81,7 @@ def inspect_quality(times, X, names, marker_times, labels, cfg):
         issues.append('Tentativa fora da cobertura EEG: início/fim truncado.')
     clean = np.nan_to_num(X, nan=0., posinf=0., neginf=0.)
     frequencies, psd = signal.welch(clean, fs=fs, nperseg=min(len(clean), max(8, round(fs*2))), axis=0)
-    power = psd.sum(axis=0) + np.finfo(float).eps
+    power = np.maximum(psd.sum(axis=0), np.finfo(float).tiny)
     line_mask = (abs(frequencies-50) <= 2) | (abs(frequencies-60) <= 2)
     line_ratio = psd[line_mask].sum(axis=0) / power
     high_ratio = psd[frequencies >= 40].sum(axis=0) / power
@@ -90,9 +94,9 @@ def inspect_quality(times, X, names, marker_times, labels, cfg):
     for window in windows:
         finite = np.isfinite(window).all(axis=0)
         safe = np.nan_to_num(window, nan=0., posinf=0., neginf=0.)
-        flag = (~finite | (np.ptp(safe, axis=0) > q.get('peak_to_peak_limit', 200.)) |
-                (np.std(safe, axis=0) < q.get('flat_std_limit', .01)) |
-                (np.max(abs(safe-med), axis=0) > q.get('max_robust_z', 8.) * np.maximum(robust_scale, 1e-12)))
+        flag = (~finite | (np.ptp(safe, axis=0) > peak_limit) |
+                (np.std(safe, axis=0) <= flat_limit) |
+                (np.max(abs(safe-med), axis=0) > q.get('max_robust_z', 8.) * np.maximum(robust_scale, np.finfo(float).tiny)))
         bad.append(flag)
     bad = np.asarray(bad, bool)
     rows = []
@@ -103,7 +107,7 @@ def inspect_quality(times, X, names, marker_times, labels, cfg):
         bad_fraction = float(np.mean(bad[:, i]))
         if invalid:
             reasons.append(f'{invalid} NaN/Inf')
-        if std < q.get('flat_std_limit', .01):
+        if std <= flat_limit:
             reasons.append('canal plano')
         if bad_fraction > q.get('max_bad_window_fraction', .2):
             reasons.append('muitas janelas suspeitas')
@@ -128,7 +132,7 @@ def inspect_quality(times, X, names, marker_times, labels, cfg):
                 issues.append(f'Canais idênticos: {names[j]} e {names[i]}.')
     report = dict(status='attention' if issues else 'ok', issues=list(dict.fromkeys(issues)),
                   estimated_fs_hz=estimated_fs, samples=len(times), gaps=gaps, estimated_missing_samples=missing,
-                  marker_counts=dict(counts), channels=rows, unit='a.u.' if simulated else q.get('unit', 'uV'),
+                  marker_counts=dict(counts), channels=rows, unit=unit,
                   source=source_name(cfg), simulated=simulated, observations=observations,
                   thresholds=q, notes='Heurísticas: sem exclusão automática; confira unidade/ganho. CV não comprova ausência de artefatos.')
     return report, clean, frequencies, psd, bad
@@ -156,6 +160,9 @@ def run_check_data(cfg, mode='train', markers_file=None, signal_file=None, save_
         return {'report_path': str(path.resolve()), **report}
     report, clean, freq, psd, bad = inspect_quality(times, X, names, tm, labels, cfg)
     report['evaluation'] = evaluation
+    report['issues'].extend((evaluation or {}).get('warnings', []))
+    if report['issues']:
+        report['status'] = 'attention'
     report['collection'] = collection
     (folder / 'quality.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     plt.rcParams.update({'font.size': 9})
@@ -176,7 +183,7 @@ def run_check_data(cfg, mode='train', markers_file=None, signal_file=None, save_
         axes[1].semilogy(freq, np.maximum(psd[:, i], 1e-16), label=name)
     for line in (50, 60):
         axes[1].axvline(line, color='gray', ls='--')
-    axes[1].set(xlabel='Frequência (Hz)', ylabel=f"PSD ({report['unit']}²/Hz)", title='Espectro bruto por canal · referências de 50/60 Hz')
+    axes[1].set(xlabel='Frequência (Hz)', ylabel=f"PSD ({'escala original' if report['unit'] == 'native' else report['unit']}²/Hz)", title='Espectro bruto por canal · referências de 50/60 Hz')
     axes[1].legend(ncol=min(len(names), 8), fontsize=7)
     axes[2].imshow(bad.T, aspect='auto', interpolation='nearest', cmap='Reds', vmin=0, vmax=1)
     axes[2].set_yticks(range(len(names)), names)

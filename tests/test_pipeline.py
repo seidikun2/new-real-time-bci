@@ -154,8 +154,10 @@ class PipelineTests(unittest.TestCase):
         from main import run_experiment
         from unittest.mock import Mock
         operator = Mock()
-        operator.confirm.return_value = True
-        operator.choose.return_value = 'next'
+        operator.closing = False
+        operator.prepare_block.return_value = True
+        operator.review_block.return_value = 'next'
+        operator.run_job.side_effect = lambda title, function, *args: function(*args)
         cfg = self.cfg
         cfg.protocol.start_phase = 'auto'
         fake = {'complete': True, 'markers_file': 'm', 'signal_file': 's'}
@@ -163,6 +165,8 @@ class PipelineTests(unittest.TestCase):
             run_experiment(cfg, operator)
         self.assertEqual(run.call_count, 4)
         self.assertEqual(analyze.call_count, 4)
+        operator.confirm.assert_not_called()
+        operator.notify.assert_not_called()
         self.assertEqual([call.args[1] for call in run.call_args_list], ['train', 'train', 'online', 'online'])
         self.assertEqual([call.args[2] for call in run.call_args_list], [None, None, '/chosen/model', '/chosen/model'])
 
@@ -170,9 +174,13 @@ class PipelineTests(unittest.TestCase):
         from main import run_block
         with tempfile.TemporaryDirectory() as folder:
             self.cfg.experiment.log_root = folder
+            self.cfg._signal_uid = 'old-block-uid'
+            self.cfg._signal_source_id = 'old-block-source'
             with patch('main.MarkerPublisher') as publisher, patch('main.simulate_signal', side_effect=RuntimeError('device failed')), patch('main.BlockRecorder.record'):
                 result = run_block(self.cfg)
             self.assertFalse(result['complete'])
+            self.assertFalse(hasattr(self.cfg, '_signal_uid'))
+            self.assertFalse(hasattr(self.cfg, '_signal_source_id'))
             self.assertIn('device failed', result['reason'])
             self.assertTrue(Path(result['markers_file']).exists())
             self.assertTrue(Path(result['signal_file']).with_suffix('.json').exists())

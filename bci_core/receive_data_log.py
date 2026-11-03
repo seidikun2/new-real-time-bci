@@ -22,6 +22,9 @@ def resolve_signal(cfg, stop, timeout=30.):
     while not stop.is_set() and time.monotonic() < deadline:
         streams = resolve_byprop('name', cfg.lsl.signal_name, timeout=.2) if cfg.lsl.signal_name else resolve_byprop('type', cfg.lsl.signal_type, timeout=.2)
         matches = [s for s in streams if s.type() == cfg.lsl.signal_type]
+        uid = getattr(cfg, '_signal_uid', None)
+        if uid:
+            matches = [s for s in matches if s.uid() == uid]
         source_id = getattr(cfg, '_signal_source_id', None)
         if source_id:
             matches = [s for s in matches if s.source_id() == source_id]
@@ -31,7 +34,8 @@ def resolve_signal(cfg, stop, timeout=30.):
             selected = matches[0]
             cfg.lsl.signal_name = selected.name()
             cfg._signal_source_id = selected.source_id()
-            return StreamInlet(selected, processing_flags=proc_clocksync)
+            cfg._signal_uid = selected.uid()
+            return StreamInlet(selected, recover=bool(selected.source_id()), processing_flags=proc_clocksync)
     raise TimeoutError('EEG não encontrado. Inicie o transmissor e confira nome/tipo LSL na tela inicial.')
 
 

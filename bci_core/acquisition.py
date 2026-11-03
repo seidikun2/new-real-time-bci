@@ -7,6 +7,8 @@ from pylsl import resolve_streams
 
 from .data import lsl_channel_names, select_channel_indices
 
+EEGO_STREAM_NAME = 'EE225-020034-000905_on_DESKTOP-U197OKE'
+
 SOURCES = {'simulator': 'Simulação', 'hiamp': 'g.HIamp', 'eego': 'ANT Neuro · eego mylab', 'lsl': 'Outro stream LSL'}
 
 
@@ -18,13 +20,14 @@ def set_source(cfg, source, fs_hz=None, channels=None, stream_name=None):
     if source not in SOURCES:
         raise ValueError('Fonte de EEG desconhecida.')
     cfg.__dict__.pop('_signal_source_id', None)
+    cfg.__dict__.pop('_signal_uid', None)
     cfg.runtime.source = source
     cfg.runtime.simulate_signal = source == 'simulator'
     options = cfg._raw_config.get(source, {})
     if source in {'eego', 'lsl'}:
         cfg.fs_hz = float(fs_hz if fs_hz is not None else options.get('fs_hz', 500. if source == 'eego' else cfg.fs_hz))
         cfg.n_channels = int(channels if channels is not None else options.get('n_channels', 64 if source == 'eego' else cfg.n_channels))
-        cfg.lsl.signal_name = stream_name if stream_name is not None else (options.get('signal_name') or '')
+        cfg.lsl.signal_name = stream_name if stream_name is not None else (options.get('signal_name') or (EEGO_STREAM_NAME if source == 'eego' else ''))
         cfg.lsl.signal_type = options.get('signal_type', 'EEG')
     else:
         cfg.fs_hz = float(fs_hz if fs_hz is not None else cfg._raw_config.get('fs_hz', 256.))
@@ -49,13 +52,22 @@ def receive_indices(cfg, names):
 def stream_layout(cfg, info):
     """Valida a configuração real do transmissor; nunca reamostra silenciosamente."""
     names = lsl_channel_names(info)
-    fs = float(info.nominal_srate())
-    if fs <= 0 or abs(fs-cfg.fs_hz) > .01:
-        raise ValueError(f'O stream anuncia {fs:g} Hz; esperado {cfg.fs_hz:g} Hz. Ajuste o transmissor ou a frequência na tela inicial.')
-    from .config_models import expected_signal_channels
-    expected = expected_signal_channels(cfg)
-    if len(names) != expected:
-        raise ValueError(f'O stream anuncia {len(names)} canais; esperado {expected}. Confira a tela inicial e o transmissor.')
+    nominal_fs = float(info.nominal_srate())
+    external = source_name(cfg) in {'eego', 'lsl'}
+    fs = nominal_fs if nominal_fs > 0 else cfg.fs_hz
+    observations = []
+    if external:
+        if nominal_fs <= 0:
+            observations.append(f'O transmissor não declara frequência nominal; usada a configuração de {fs:g} Hz.')
+        elif abs(fs-cfg.fs_hz) > .01:
+            observations.append(f'Frequência recebida: {fs:g} Hz (perfil inicial: {cfg.fs_hz:g} Hz).')
+        if len(names) != cfg.n_channels:
+            observations.append(f'O transmissor publica {len(names)} canais (perfil inicial: {cfg.n_channels}).')
+        cfg.fs_hz, cfg.n_channels = fs, len(names)
+    else:
+        from .config_models import expected_signal_channels
+        if fs <= 0 or abs(fs-cfg.fs_hz) > .01 or len(names) != expected_signal_channels(cfg):
+            raise ValueError('A aquisição local não corresponde à frequência/quantidade de canais configuradas.')
     indices = receive_indices(cfg, names)
     if len(indices) < 2:
         raise ValueError('Selecione pelo menos dois canais para a pipeline.')
@@ -66,18 +78,19 @@ def stream_layout(cfg, info):
         units.append(channel.child_value('unit') or '')
         channel = channel.next_sibling()
     declared = options.get('unit', 'auto')
-    factors = []
-    for i in indices:
-        unit = units[i] if declared == 'auto' else declared
-        normalized = unit.strip().lower().replace('µ', 'u').replace('μ', 'u')
-        scales = {'uv': 1., 'microvolts': 1., 'microvolt': 1., 'mv': 1e3, 'millivolts': 1e3, 'v': 1e6, 'volts': 1e6, 'volt': 1e6}
-        if source_name(cfg) in {'eego', 'lsl'} and normalized not in scales:
-            raise ValueError(f'Unidade desconhecida em {names[i]}: {unit!r}. Configure unit: uV, mV ou V na fonte após conferir o transmissor.')
-        factors.append(scales.get(normalized, 1.))
+    scales = {'uv': 1., 'microvolts': 1., 'microvolt': 1., 'mv': 1e3, 'millivolts': 1e3, 'v': 1e6, 'volts': 1e6, 'volt': 1e6}
+    selected_units = [units[i] if declared == 'auto' else declared for i in indices]
+    normalized = [unit.strip().lower().replace('µ', 'u').replace('μ', 'u') for unit in selected_units]
+    known = all(unit in scales for unit in normalized)
+    factors = [scales[unit] for unit in normalized] if known else [1.] * len(indices)
+    unit = 'uV' if known else ('a.u.' if source_name(cfg) == 'simulator' else 'native')
+    if external and not known:
+        observations.append('Unidade não informada pelo transmissor: escala original preservada; limites absolutos de amplitude não aplicados.')
     metadata = {'name': info.name(), 'type': info.type(), 'source_id': info.source_id(),
                 'fs_hz': fs, 'source_channels': len(names), 'source_channel_names': names,
                 'recorded_channels': [names[i] for i in indices], 'source_units': units,
-                'scale_to_uV': factors, 'unit': 'uV', 'source': source_name(cfg)}
+                'scale_to_uV': factors if known else None, 'scale_factors': factors, 'unit': unit,
+                'observations': observations, 'source': source_name(cfg)}
     return indices, np.asarray(factors), metadata
 
 
@@ -105,6 +118,8 @@ def recording_config(cfg, signal_file):
     result.runtime.simulate_signal = stream['source'] == 'simulator'
     result._raw_config.setdefault(stream['source'], {})['receive_channels'] = []
     result._recorded_channel_count = len(stream['recorded_channels'])
+    result._recorded_unit = stream.get('unit', 'uV')
+    result._stream_observations = stream.get('observations', [])
     recorded = meta.get('config', {})
     effective = meta.get('effective_config', {})
     result.trial_duration_s = effective.get('trial_duration_s', recorded.get('trial_duration_s', result.trial_duration_s))
