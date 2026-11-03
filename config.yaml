@@ -31,7 +31,7 @@ experiment:
   log_root      : "Dados"
 
 runtime:
-  source           : null        # null usa simulate_signal; simulator | hiamp | eego | lsl
+  source           : eego        # null usa simulate_signal; simulator | hiamp | eego | lsl
   simulate_signal  : true        # true = simulação; false = g.HIamp
 
 protocol:
@@ -195,7 +195,7 @@ eego:
   signal_name: null       # descobrir pela interface; não pressupõe nome/serial
   signal_type: "EEG"
   fs_hz: 500.0
-  n_channels: 64          # quantidade total publicada, incluindo auxiliares se houver
+  n_channels: 29          # quantidade total publicada, incluindo auxiliares se houver
   receive_channels: []   # [] grava todos; exemplo [1, 2, 3] ou nomes (receive_by: name)
   receive_by: "index"
   index_base: 1
