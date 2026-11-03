@@ -8,7 +8,7 @@ mostra, com baixa taxa de atualização:
   - posição ATUAL de rep1/rep2;
   - p_left, p_rest, p_right;
   - classes disponíveis no modelo;
-  - fase/cue mais recente do PsychoPy (opcional).
+  - fase/cue mais recente do protocolo Python (opcional).
 
 GrazMI_Control NÃO é consumido aqui. O controlador continua rodando normalmente
 para o Unity, mas left_leg/right_leg/state não são desenhados nesta dashboard.
@@ -39,19 +39,6 @@ CODE_MAP = {
     1: "BASELINE", 2: "ATTENTION", 3: "LEFT_MI_STIM", 4: "RIGHT_MI_STIM",
     5: "ATTEMPT", 6: "REST", 7: "BOTH_MI_STIM", 8: "REST_STIM", 99: "BLOCK_END",
 }
-
-
-def resolve_stream_blocking(name, stype, timeout=1.0):
-    print(f"Procurando stream: name={name}, type={stype}")
-    while True:
-        streams = resolve_byprop("name", name, timeout=timeout) if name else []
-        if not streams and stype:
-            streams = resolve_byprop("type", stype, timeout=timeout)
-        if streams:
-            si = streams[0]
-            print(f"Conectado: {si.name()} | type={si.type()} | ch={si.channel_count()}")
-            return StreamInlet(si, recover=True)
-        time.sleep(0.5)
 
 
 def resolve_stream_once(name, stype, timeout=0.02):

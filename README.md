@@ -1,209 +1,178 @@
+# BCI — protocolo Python + estímulos Unity
 
-## Dashboard v9 — estado atual no PCA
+O Python conduz os tempos, embaralha as tentativas, grava EEG e marcadores,
+treina os modelos e gera os relatórios. O Unity recebe os marcadores LSL e
+apresenta os estímulos. PsychoPy não é necessário.
 
-A dashboard do experimentador não desenha mais a trajetória histórica no PCA.
-O mapa KDE da calibração permanece estático e apenas o ponto `rep1/rep2` atual é
-atualizado. Isso remove a aparência de uma trilha que muda entre frames e reduz
-o trabalho gráfico. A cada frame da GUI, se houver várias amostras LSL pendentes,
-somente a mais recente é usada. Decoder e `GrazMI_Control` não foram alterados.
+## Operar pelo Visual Studio Code
 
-# BCI — protocolo em duas etapas
+Preparação, feita uma vez na estação do laboratório:
 
-Execute sempre pela raiz:
+1. Instale Python 3.12 com Tcl/Tk e o VS Code. No instalador Windows do Python,
+   mantenha Tcl/Tk habilitado. Aceite as extensões Python e Python Debugger
+   recomendadas ao abrir esta pasta no VS Code.
+2. Pela paleta do VS Code, use **Python: Create Environment → Venv** e selecione
+   `requirements.txt`. Alternativamente, selecione um ambiente existente e
+   execute **Terminal → Run Task → BCI: instalar dependências no Python selecionado**.
+3. Para g.HIamp, mantenha o SDK/driver g.tec funcionando e confira `hiamp.gtec_root`
+   no `config.yaml`. O SDK proprietário não é instalado por pip.
+4. Abra o Unity do laboratório. Os builds Windows existentes foram preservados.
+
+Em cada sessão:
+
+1. Abra a pasta do projeto e selecione o interpretador preparado.
+2. Em **Run and Debug**, selecione **BCI: conduzir experimento** e pressione **F5**.
+3. Na janela inicial, confira sujeito, sessão, etapa, perna-alvo, fase inicial e
+   aquisição simulada ou g.HIamp. Essas escolhas valem para a execução atual;
+   os padrões continuam no YAML. Não há perguntas no prompt.
+4. Confirme cada bloco. A janela de acompanhamento mostra a gravação e permite
+   **Interromper bloco e salvar**. Prefira esse botão ao encerramento forçado do VS Code.
+5. Ao fim de cada bloco, inspecione o relatório aberto no navegador. Confirme o
+   treino quando os dados forem utilizáveis, confira a acurácia e escolha
+   repetir, seguir ou encerrar. Não é preciso interpretar o terminal para conduzir.
+6. Antes do online, escolha explicitamente um modelo ou um bloco de dados para
+   retreinar. Também é possível abrir `model_meta.json` de outra sessão.
+   O programa mostra os dados de origem e pede confirmação da escolha.
+
+Se um relatório não abrir automaticamente, o caminho fica no diálogo e na pasta
+`_qc`. Em máquinas Linux, a operação gráfica requer uma sessão de desktop e Tk;
+o teste de simulação abaixo funciona sem desktop.
+
+## Fluxo experimental preservado
+
+`Execução motora → Imagética motora → Online bloco 1 → Online bloco 2`.
+
+- `single_target`: perna-alvo vs `REST_STIM`; a outra perna continua como cue,
+  mas fica fora do ajuste.
+- `two_legs`: `LEFT_MI_STIM` vs `RIGHT_MI_STIM` vs `REST_STIM`.
+- `start_phase: auto` percorre a sequência completa. É possível começar na
+  imagética ou no online, selecionando um modelo existente.
+- São 15 tentativas por classe, 45 ao todo, com embaralhamento balanceado
+  reprodutível (`rng_seed`). Repetições de um bloco usam outra semente.
+- Baseline: 3 s; em cada trial: atenção 2 s → cue 1,25 s → tentativa 3,75 s →
+  pausa 2 s. Os tempos e a quantidade estão em `protocol`; a tentativa continua
+  em `trial_duration_s`.
+- Há treino e estimativa de acurácia após **cada bloco completo**, inclusive online.
+  O operador pode recusar o treino se a inspeção revelar dados inadequados.
+  Blocos interrompidos são preservados e diagnosticados, mas não treinados.
+
+Os nomes de sessão `_PCA` e `_sem_feedback` foram mantidos para organização dos
+arquivos existentes. Nesta versão o PCA fica sempre com o experimentador;
+os dois blocos online usam o modelo escolhido e o mesmo contrato de controle.
+A apresentação do avatar continua no Unity.
+
+## Modelo e interpretação da acurácia
+
+O processamento usa SciPy, pyRiemann e scikit-learn:
+
+`filtro causal contínuo → covariância OAS → espaço tangente Riemann completo → SVM linear`.
+
+Com C canais, a classificação usa C(C+1)/2 características, sem redução PCA.
+Uma projeção PCA independente de duas dimensões serve apenas para o mapa do
+experimentador. Nem a classificação nem a decisão de movimento consultam o PCA.
+
+A validação usa `StratifiedGroupKFold`, agrupando as janelas por tentativa.
+Média Riemann e SVM são ajustados dentro de cada fold. Janelas sobrepostas de
+uma tentativa nunca ficam simultaneamente no treino e na validação. O relatório
+mostra média por fold, acurácia balanceada, voto majoritário por tentativa e matriz
+de confusão por janela. Com menos de duas tentativas por classe, a estimativa é
+marcada como indisponível; não é apresentada uma acurácia de treino como CV.
+
+Essa é uma estimativa **offline dentro do bloco**. Não mede a generalização para
+outra sessão nem a acurácia do modelo que estava ativo no online. As probabilidades
+usam `SVC(probability=True)`; a CV reportada avalia as predições, não a calibração
+dessas probabilidades. Dados com artefatos podem produzir acurácias enganosas.
+
+O modelo selecionado antes do online permanece fixo durante os blocos. Os modelos
+novos ficam salvos separadamente; retreinar nunca sobrescreve um modelo anterior.
+Modelos antigos que classificavam no PCA devem ser **retreinados a partir dos CSVs**.
+A seleção rejeita etapa/perna/frequência incompatíveis. Carregue apenas modelos
+locais confiáveis, pois os artefatos usam pickle.
+
+## Qualidade em todos os blocos
+
+Cada bloco gera um `report.html`, `overview.png`, `quality.json` e `channels.csv`.
+A análise considera todos os canais gravados, inclusive os que não foram
+selecionados para o classificador:
+
+- EEG publicado pelo amplificador (após referência), com marcadores e espectro
+  de potência por canal (Welch).
+- Mapa por segundo de amplitudes suspeitas, flatlines, picos robustos e NaN/Inf.
+- Métricas de amplitude, desvio, ruído 50/60 Hz, alta frequência e patamares.
+- Canais idênticos, quantidade de canais, frequência, timestamps fora de ordem,
+  intervalos longos, cobertura dos trials e coerência dos marcadores.
+- Bloco incompleto, ausência de classes e falhas na avaliação ficam explícitos.
+
+Os limites em `quality` são heurísticos e dependem da unidade/ganho do stream.
+O g.HIamp declara µV; confirme isso na estação real antes de usar limites absolutos.
+A simulação usa ruído branco, portanto alertas de alta frequência são esperados.
+O gráfico bruto usa escala robusta por canal e limita a exibição de picos para
+facilitar a leitura; os valores originais e o pico a pico ficam nos CSVs/tabela.
+
+Nenhum canal ou trial é removido automaticamente. Corrija eletrodos/referência
+quando necessário; para uma seleção deliberada de canais, use `select_channels`
+e retreine. Intervalos longos podem representar perda **ou jitter dos timestamps**;
+a estimativa de amostras ausentes não é um contador do dispositivo. Janelas de
+treino não atravessam intervalos maiores que 20 ms (ou 1,5 amostra, se maior).
+A inferência interrompe o bloco em descontinuidades maiores que 100 ms, NaN/Inf,
+falha de componentes ou interrupção prolongada da aquisição.
+
+## Contratos LSL
+
+| Stream | Formato e função |
+| --- | --- |
+| `GrazMI_Markers / Markers` | Um `int32`: 1 baseline, 2 atenção, 3 LEFT, 4 RIGHT, 5 tentativa, 6 pausa, 8 REST_STIM, 99 fim. Código 7 reservado. |
+| `gHIamp_EEG / EEG` | EEG, com nomes de canais preservados na gravação. Com aquisição física de 16 e referência CH16 removida, são 15 canais publicados. |
+| `Signal / BCI` | `rep1, rep2, p_left, p_rest, p_right, active_left, active_rest, active_right`. PCA só no dashboard; `feedback_enabled=false`. |
+| `GrazMI_Control / BCIControl` | `left_leg, right_leg, rest, left, both, right, confidence, density_gate, state_id`. `both` e `density_gate` ficam em zero. |
+
+O controle usa probabilidades, limiar/margem, persistência temporal e rampas de
+subida/descida. `REST_STIM` não produz movimento bilateral. Sem decoder recente,
+o controle retorna ao repouso. `BLOCK_END` também é enviado numa interrupção
+controlada, mas o bloco é registrado como incompleto.
+
+O marcador registra o **envio do comando pelo Python**, não o frame em que o Unity
+apresentou o estímulo. Para medir onset visual com precisão, é necessário um
+retorno do Unity ou fotodiodo; este repositório não contém o código-fonte Unity.
+O programa espera streams locais funcionais antes de iniciar os cues, mas isso
+não comprova que o Unity recebeu/desenhou cada estímulo: confira sua conexão.
+
+## Arquivos e manutenção
+
+`Dados/<sujeito>/S<sessão>/<tipo>/train/` guarda a execução/imagética;
+`Dados/<sujeito>/S<sessão>/online/` guarda os blocos online.
+Cada par de CSVs compartilha um identificador único. O JSON ao lado do sinal
+registra conclusão/interrupção, configuração efetiva, sequência e modelo ativo.
+`_model/` guarda cada treino e seu mapa; `_qc/` guarda cada relatório.
+
+- `main.py`: fluxo das fases, escolha do modelo e supervisão dos componentes.
+- `operator.py`: janelas de operação; `protocol.py`: sequência/tempos.
+- `receive_data_log.py`: gravação; `input_hiamp.py`: integração g.tec preservada.
+- `data.py`: leitura e janelas comuns; `check_data.py`: relatório.
+- `decoder_calibration.py`: treino/CV; `online_inference.py`: inferência.
+- `representation_feedback.py`: mapa; `intention_control.py`: movimento.
+- `tools/plot_decoder_realtime.py`: dashboard; `tests/`: regressões.
+
+Foram removidos backups duplicados, bytecode versionado, scripts/estímulos
+PsychoPy e antigos arquivos estáticos de resultados. Builds Unity foram preservados.
+O PDF em `docs/` é documentação histórica e pode descrever a pipeline anterior.
+
+## Verificação técnica
+
+No VS Code, selecione **BCI: testar pipeline simulada (sem Unity)** e pressione F5.
+Esse teste coleta dois blocos curtos, treina, gera relatórios, publica feedback e
+executa o controle, sem hardware nem desktop. As saídas vão a uma pasta temporária.
+A acurácia desse teste não representa desempenho em EEG real.
+
+Para manutenção pela linha de comando:
 
 ```bash
-python main.py
-```
-
-O protocolo atual usa três cues experimentais no PsychoPy/Unity:
-
-- `LEFT_MI_STIM` — bola esquerda
-- `RIGHT_MI_STIM` — bola direita
-- `REST_STIM` — bola central, entre as pernas
-
-`REST_STIM` é diferente de `REST`: `REST` continua sendo apenas a pausa entre trials.
-
-## Etapa 1 — uma perna vs REST
-
-No `config.yaml`:
-
-```yaml
-protocol:
-  stage         : "single_target"
-  start_phase   : "auto"
-  online_target : "right"   # left | right
-```
-
-Com `start_phase: auto`, o `main.py` executa:
-
-```text
-EM_treino
-→ IM_treino
-→ online target com feedback PCA
-→ online target sem feedback
-```
-
-O bloco de treino contém LEFT, RIGHT e REST, mas o classificador usa somente:
-
-```text
-RIGHT vs REST   # se online_target=right
-```
-
-ou
-
-```text
-LEFT vs REST    # se online_target=left
-```
-
-A outra perna permanece nos dados/cues, mas não entra no ajuste do modelo. No online ela funciona como confusor.
-
-## Etapa 2 — duas pernas + REST
-
-Depois de terminar a etapa 1, altere somente:
-
-```yaml
-protocol:
-  stage: "two_legs"
-```
-
-e execute novamente:
-
-```bash
-python main.py
-```
-
-Com `start_phase: auto`, a segunda etapa repete exatamente o mesmo fluxo:
-
-```text
-EM_treino
-→ IM_treino
-→ online duas pernas com feedback PCA
-→ online duas pernas sem feedback
-```
-
-O modelo passa a usar:
-
-```text
-LEFT vs RIGHT vs REST
-```
-
-Isto corresponde às duas pernas como classes motoras separadas, mantendo REST como estado explícito de não movimento. Não há movimento simultâneo BOTH nesta etapa.
-
-Portanto, as duas etapas diferem somente no modelo:
-
-```text
-single_target : TARGET vs REST_STIM
-two_legs      : LEFT vs RIGHT vs REST_STIM
-```
-
-A sequência experimental continua LEFT + RIGHT + REST_STIM nas duas etapas.
-
-O `online_model_prefix: "latest"` e `model_session_types: ["IM_treino"]` fazem o online usar automaticamente o modelo da IM mais recente, portanto a segunda etapa não reutiliza por engano o modelo da primeira.
-
-## Feedback contínuo e Unity
-
-Os papéis dos streams ficam separados:
-
-```text
-Signal / BCI
-= [rep1, rep2, p_left, p_rest, p_right, active_left, active_rest, active_right]
-
-GrazMI_Control / BCIControl
-= camada de decisão/histerese; left_leg/right_leg movem o avatar
-```
-
-`p_left/p_rest/p_right` vêm diretamente de `predict_proba`, antes do controlador. Em single-target, a classe que não participa do modelo fica com probabilidade 0 e `active_* = 0`; não há renormalização incluindo essa classe. `REST_STIM` nunca gera movimento bilateral.
-
-A lógica visual do Unity deve mapear os cues assim:
-
-```text
-LEFT_MI_STIM  → bola para esquerda
-RIGHT_MI_STIM → bola para direita
-REST_STIM     → bola para o centro (trajetória antes usada por BOTH)
-```
-
-A alteração dessa trajetória é feita no projeto Unity, não neste pacote Python.
-
-## PsychoPy
-
-`experiment/stims_sequence.csv` contém apenas LEFT, RIGHT e REST_STIM. `BOTH_MI_STIM` continua no mapa de códigos apenas por compatibilidade, mas não participa do protocolo atual.
-
-As imagens devem estar diretamente em `experiment/`:
-
-```text
-cross.png
-rest.png
-left_foot.png
-right_foot.png
-```
-
-O `.psyexp` lê `stims_sequence.csv` e envia o marcador correspondente no início do cue.
-
-
-## Dashboard / teste do contrato
-
-Com `debug_plot.enabled: true`, `tools/plot_decoder_realtime.py` mostra simultaneamente rep1/rep2, P(LEFT/REST/RIGHT), classes ativas, estado do controlador e left_leg/right_leg. O dashboard apenas consome LSL; não participa da inferência.
-
-Para validar o contrato sem coleta:
-
-```bash
+python -m unittest discover -s tests -v
 python tools/simulate_feedback_lsl.py
+python main.py --smoke
 ```
 
-Para também publicar os vetores de exemplo em LSL:
-
-```bash
-python tools/simulate_feedback_lsl.py --lsl
-```
-
-## Dashboard PCA — mapa KDE estático (v5)
-
-A dashboard em `tools/plot_decoder_realtime.py` agora recebe automaticamente o
-`S#/online/pca_map.json` selecionado pelo `main.py`.
-
-- os limites `rep1/rep2` vêm do JSON do modelo ativo;
-- o `map_image` associado é desenhado uma única vez como background do PCA,
-  preservando as curvas KDE e os rótulos gerados durante a calibração;
-- se o PNG não estiver disponível, a dashboard reconstrói o background a partir
-  dos polígonos de `density_regions` do próprio JSON;
-- somente a trajetória/ponto online é atualizado no loop, portanto o mapa não
-  acrescenta custo relevante à atualização em tempo real;
-- os eixos foram deslocados para baixo e os textos de fase/classes/estado foram
-  separados dos títulos para evitar sobreposição.
-
-
-## Dashboard v6 — correção do event loop
-
-A dashboard agora usa o timer nativo do canvas + `plt.show(block=True)` em vez de um loop manual com `flush_events()`. Isso evita erros do backend Tk como `RuntimeError: main thread is not in main loop` e `Tcl_AsyncDelete`, mantendo a dashboard apenas como consumidora dos streams LSL. O mapa PCA/KDE continua estático ao fundo.
-
-## v7 — dashboard leve do experimentador
-
-A dashboard Python foi simplificada para ser uma janela secundária ao Unity:
-
-- mostra somente o **mapa PCA/KDE estático**, a posição/trilha curta de `rep1/rep2`,
-  `p_left`, `p_rest`, `p_right`, classes ativas e a fase/cue do PsychoPy;
-- **não consome nem plota `GrazMI_Control`**; esse stream continua sendo produzido
-  normalmente e continua responsável pelo movimento do avatar no Unity;
-- atualização visual padrão reduzida para **8 Hz**; isso não altera a taxa do decoder;
-- trilha PCA padrão reduzida para **3 s / máximo de 96 pontos desenhados**;
-- uso de **blitting** quando suportado pelo backend, mantendo o mapa KDE fora dos
-  redraws normais e melhorando a responsividade ao mover a janela;
-- janela compacta (`9.2 x 3.9`) para permanecer no canto durante o experimento.
-
-Parâmetros em `config.yaml`:
-
-```yaml
-debug_plot:
-  plot_hz          : 8.0
-  trail_s          : 3.0
-  max_trace_points : 96
-  show_markers     : true
-```
-
-Se ainda quiser uma GUI mais leve, `plot_hz: 5.0` é suficiente para monitoramento
-visual sem alterar em nada a inferência ou o controle enviado ao Unity.
-
-
-## v8 — dashboard aparece imediatamente
-
-A dashboard agora cria a janela **antes** de procurar `Signal / BCI`. A descoberta LSL é feita de forma não bloqueante dentro do timer da GUI. Assim, mesmo enquanto o decoder está inicializando, a janela aparece com `Signal: aguardando`. O blitting só é ativado depois do primeiro `draw_event` do backend, evitando chamadas de `draw()` antes do `Tk` estar no mainloop. Defaults da GUI: 5 Hz, trilha 2.5 s, 64 pontos. Isso não altera a taxa do decoder nem `GrazMI_Control`.
+As versões verificadas em Python 3.12 estão em `requirements-lock.txt`, aplicado
+como restrição pelo `requirements.txt`. Valide também SDK, drivers e sistema
+operacional da estação antes da coleta. g.HIamp, renderização Unity e operação
+com participantes precisam de validação na estação real antes de uma sessão.

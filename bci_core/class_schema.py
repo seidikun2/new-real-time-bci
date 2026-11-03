@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import csv
-from pathlib import Path
 from typing import Iterable, Mapping, Any
 
 # LEFT/RIGHT são as classes motoras principais do protocolo atual.
@@ -183,16 +181,3 @@ def class_details(label_map: Mapping[str, int], code_map: Mapping[int, str] | No
             }
         )
     return rows
-
-
-def classes_from_sequence(path: str | Path) -> list[str]:
-    p = Path(path)
-    if not p.exists():
-        return []
-    labels: list[str] = []
-    with p.open("r", encoding="utf-8-sig", newline="") as f:
-        for row in csv.DictReader(f):
-            label = normalize_label(row.get("event_label", ""))
-            if label and label not in labels:
-                labels.append(label)
-    return active_stim_labels(labels)

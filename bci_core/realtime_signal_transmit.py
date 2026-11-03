@@ -9,7 +9,7 @@ from collections import deque
 import time
 import math
 import numpy as np
-from pylsl import StreamInfo, StreamOutlet, resolve_byprop, StreamInlet
+from pylsl import StreamInfo, StreamOutlet, resolve_byprop, StreamInlet, local_clock
 
 from .config_models import AppConfig
 
@@ -119,13 +119,16 @@ def marker_thread(cfg: AppConfig, inlet, q, stop_event: threading.Event):
 
 
 def stream(cfg: AppConfig, outlet, q, stop_event: threading.Event):
-    rng = np.random.default_rng()
+    rng = np.random.default_rng(cfg.rng_seed)
     ev  = []
     FS     = cfg.sim_signal.fs
     CHUNK  = cfg.sim_signal.chunk
     NOISE  = cfg.sim_signal.noise_std
     dt  = CHUNK / FS
 
+    origin = local_clock()
+    count = 0
+    deadline = time.monotonic()
     while not stop_event.is_set():
         x = rng.normal(0, NOISE, (CHUNK, cfg.sim_signal.channels)).astype(np.float32)
 
@@ -139,9 +142,11 @@ def stream(cfg: AppConfig, outlet, q, stop_event: threading.Event):
                 keep.append(e)
         ev = keep
 
-        outlet.push_chunk(x.tolist())
-
-        time.sleep(dt)
+        stamps = (origin + (count + np.arange(CHUNK)) / FS).tolist()
+        outlet.push_chunk(x.tolist(), timestamp=stamps)
+        count += CHUNK
+        deadline += dt
+        stop_event.wait(max(0., deadline-time.monotonic()))
 
 
 

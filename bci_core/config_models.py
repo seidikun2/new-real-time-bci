@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Tuple, Optional
-import copy
 import yaml
 
 
@@ -28,7 +27,6 @@ class LSLConfig:
 @dataclass
 class RuntimeConfig:
     simulate_signal: bool
-    start_mode: str = "full_loop"
 
 
 @dataclass
@@ -42,9 +40,6 @@ class ProtocolConfig:
     motor_session_type: str = "EM_treino"
     imagery_session_type: str = "IM_treino"
     min_cv_accuracy: Optional[float] = None
-    auto_check_data: bool = True
-    online_model_prefix: str = "ask"
-    model_session_types: List[str] = field(default_factory=lambda: ["EM_treino", "IM_treino"])
     online_modes: List[Dict[str, Any]] = field(default_factory=list)
 
 
@@ -83,33 +78,6 @@ class CodesConfig:
 
 
 @dataclass
-class ModelConfig:
-    fs_hz: float
-    bp_order: int
-    bp_band: List[float]
-    epoch_s: float
-    trial_offset_s: float
-    pca_dim: int
-    svc_c: float
-    rng_seed: int
-    cv_splits: int
-    select_by: str
-    index_base: int
-    select_channels: List[Any]
-
-
-@dataclass
-class CheckDataConfig:
-    select_channels: List[Any]
-    hp_cutoff_hz: float
-    hp_order: int
-    tmin: float
-    tmax: float
-    baseline_s: float
-    save_png: bool
-
-
-@dataclass
 class DecoderConfig:
     epoch_s: float
     step_s: float
@@ -130,8 +98,6 @@ class AppConfig:
     sim_burst: SimBurstConfig
     sim_profiles: SimProfilesConfig
     codes: CodesConfig
-    model: ModelConfig
-    check_data: CheckDataConfig
     decoder: DecoderConfig
 
     fs_hz: float
@@ -156,255 +122,76 @@ class AppConfig:
     _raw_config: Dict[str, Any] = field(default_factory=dict, repr=False)
 
 
-def _get(raw: Dict[str, Any], key: str, default: Any = None) -> Any:
-    return raw.get(key, default)
-
-
-def _nested(raw: Dict[str, Any], section: str, key: str, default: Any = None) -> Any:
-    value = raw.get(section, {}) or {}
-    return value.get(key, default) if isinstance(value, dict) else default
-
-
-def _first(*values, default=None):
-    for value in values:
-        if value is not None:
-            return value
-    return default
-
-
-def _as_list(value, default=None):
-    if value is None:
-        return [] if default is None else default
-    if isinstance(value, list):
-        return value
-    if isinstance(value, tuple):
-        return list(value)
-    return [value]
-
-
-def _default_online_modes() -> list[dict[str, Any]]:
-    return [
-        {
-            "name": "pca_feedback",
-            "label": "Online com feedback PCA",
-            "session_type": "IM_online_PCA",
-            "feedback_mode": "pca",
-        },
-        {
-            "name": "no_feedback",
-            "label": "Online sem feedback",
-            "session_type": "IM_online_sem_feedback",
-            "feedback_mode": "none",
-        },
-    ]
-
-
-def _protocol(raw: Dict[str, Any]) -> ProtocolConfig:
-    p = raw.get("protocol", {}) or {}
-    stage = str(p.get("stage", "single_target")).strip().lower()
-    stage_alias = {
-        "single": "single_target", "single_leg": "single_target", "one_leg": "single_target",
-        "single_target": "single_target", "target_vs_rest": "single_target",
-        "dual": "two_legs", "dual_leg": "two_legs", "two_legs": "two_legs",
-        "left_right": "two_legs", "left_right_vs_rest": "two_legs",
+def load_config(path: str = "config.yaml") -> AppConfig:
+    """Configuração única; os nomes básicos do YAML continuam iguais."""
+    with open(path, encoding="utf-8") as stream:
+        raw = yaml.safe_load(stream) or {}
+    values = {
+        "fs_hz": 256.0, "n_channels": 16, "trial_duration_s": 3.75,
+        "trial_offset_s": 0.0, "window_s": 1.0, "step_s": 0.05,
+        "filter_mode": "causal", "bp_order": 3, "bp_band_hz": [5.0, 40.0],
+        "select_by": "index", "index_base": 1, "select_channels": [],
+        "feature_space": "riemann", "classifier": "svm_linear", "pca_dim": 2,
+        "svc_c": 1.0, "cv_splits": 5, "rng_seed": 42,
     }
-    stage = stage_alias.get(stage, stage)
+    values.update({key: raw[key] for key in values if key in raw})
+    if values["filter_mode"] != "causal" or values["feature_space"] != "riemann":
+        raise ValueError("Use filter_mode: causal e feature_space: riemann (PCA é apenas visual).")
+    if values["classifier"] != "svm_linear":
+        raise ValueError("O classificador suportado é svm_linear.")
+    fs, window, step = values["fs_hz"], values["window_s"], values["step_s"]
+    low, high = values["bp_band_hz"]
+    if not (0 < low < high < fs / 2 and window > 0 and step > 0):
+        raise ValueError("Verifique frequência, banda, janela e passo.")
+    if values["trial_offset_s"] < 0 or values["trial_offset_s"] + window > values["trial_duration_s"]:
+        raise ValueError("A janela precisa caber dentro do ATTEMPT.")
+    if values["n_channels"] < 2 or values["pca_dim"] != 2 or values["cv_splits"] < 2:
+        raise ValueError("Use >=2 canais, pca_dim: 2 e cv_splits >=2.")
+    exp_values = dict(subject_id="TEST", session_id=1, log_root="Dados", exp_name="TEST", session_type="IM_treino")
+    exp_values.update(raw.get("experiment", {}))
+    exp = ExperimentConfig(**exp_values)
+    for name in (exp.subject_id, exp.exp_name, exp.session_type):
+        if not name or any(c in name for c in '/\\') or name in {".", ".."}:
+            raise ValueError("Identificadores devem ser nomes simples, sem separadores de pasta.")
+    p = raw.get("protocol", {})
+    stage = p.get("stage", "single_target")
     if stage not in {"single_target", "two_legs"}:
-        raise ValueError("protocol.stage inválido. Use single_target ou two_legs.")
-
-    training_mode = str(p.get("training_mode", "auto")).strip().lower()
-    if training_mode in {"", "auto"}:
-        training_mode = "target_vs_rest" if stage == "single_target" else "left_right_vs_rest"
-
-    modes = p.get("online_modes", _default_online_modes())
-    if not isinstance(modes, list) or not modes:
-        modes = _default_online_modes()
-    return ProtocolConfig(
-        stage=stage,
-        start_phase=str(p.get("start_phase", "auto")),
-        training_mode=training_mode,
-        online_target=str(p.get("online_target", "left")),
-        block_end_code=int(p.get("block_end_code", _nested(raw, "codes", "block_end", 99))),
-        block_end_label=str(p.get("block_end_label", "BLOCK_END")),
-        motor_session_type=str(p.get("motor_session_type", "EM_treino")),
-        imagery_session_type=str(p.get("imagery_session_type", "IM_treino")),
-        min_cv_accuracy=p.get("min_cv_accuracy", None),
-        auto_check_data=bool(p.get("auto_check_data", True)),
-        online_model_prefix=str(p.get("online_model_prefix", "ask")),
-        model_session_types=_as_list(p.get("model_session_types", ["EM_treino", "IM_treino"])),
-        online_modes=[dict(m) for m in modes if isinstance(m, dict)],
-    )
-
-
-def load_config(path: str) -> AppConfig:
-    with open(path, "r", encoding="utf-8") as f:
-        raw: Dict[str, Any] = yaml.safe_load(f) or {}
-
-    fs_hz = float(_first(_get(raw, "fs_hz"), _nested(raw, "model", "fs_hz"), _nested(raw, "sim_signal", "fs"), default=256.0))
-    n_channels = int(_first(_get(raw, "n_channels"), _nested(raw, "sim_signal", "channels"), default=16))
-    trial_duration_s = float(_first(_get(raw, "trial_duration_s"), _nested(raw, "protocol", "trial_duration_s"), _nested(raw, "check_data", "tmax"), default=3.75))
-    trial_offset_s = float(_first(_get(raw, "trial_offset_s"), _nested(raw, "model", "trial_offset_s"), default=0.0))
-    window_s = float(_first(_get(raw, "window_s"), _nested(raw, "model", "epoch_s"), _nested(raw, "decoder", "epoch_s"), default=1.0))
-    step_s = float(_first(_get(raw, "step_s"), _nested(raw, "decoder", "step_s"), _nested(raw, "model", "step_s"), default=0.05))
-    filter_mode = str(_first(_get(raw, "filter_mode"), _nested(raw, "model", "filter_mode"), default="causal"))
-    bp_order = int(_first(_get(raw, "bp_order"), _nested(raw, "model", "bp_order"), _nested(raw, "decoder", "filter_order"), default=3))
-    bp_band_hz = list(_first(_get(raw, "bp_band_hz"), _nested(raw, "model", "bp_band"), _nested(raw, "decoder", "band_hz"), default=[5.0, 40.0]))
-    select_by = str(_first(_get(raw, "select_by"), _nested(raw, "model", "select_by"), default="index"))
-    index_base = int(_first(_get(raw, "index_base"), _nested(raw, "model", "index_base"), default=1))
-    select_channels = _as_list(_first(_get(raw, "select_channels"), _nested(raw, "model", "select_channels"), default=[]))
-    feature_space = str(_get(raw, "feature_space", "riemann_pca"))
-    classifier = str(_get(raw, "classifier", "svm_linear"))
-    pca_dim = int(_first(_get(raw, "pca_dim"), _nested(raw, "model", "pca_dim"), default=2))
-    svc_c = float(_first(_get(raw, "svc_c"), _nested(raw, "model", "svc_c"), default=1.0))
-    cv_splits = int(_first(_get(raw, "cv_splits"), _nested(raw, "model", "cv_splits"), default=5))
-    rng_seed = int(_first(_get(raw, "rng_seed"), _nested(raw, "model", "rng_seed"), default=42))
-
-    exp_raw = raw.get("experiment", {}) or {}
-    lsl_raw = raw.get("lsl", {}) or {}
-    runtime_raw = raw.get("runtime", {}) or {}
-    codes_raw = raw.get("codes", {}) or {}
-    code_map_raw = codes_raw.get("map", codes_raw.get("code_map", {}))
-    code_map = {int(k): str(v) for k, v in code_map_raw.items()}
-
-    exp = ExperimentConfig(
-        subject_id=str(exp_raw.get("subject_id", "TT000")),
-        session_id=int(exp_raw.get("session_id", 1)),
-        log_root=str(exp_raw.get("log_root", "Dados")),
-        exp_name=str(exp_raw.get("exp_name", "TEST")),
-        session_type=str(exp_raw.get("session_type", "IM_treino")),
-    )
-    lsl = LSLConfig(
-        marker_name=str(lsl_raw.get("marker_name", "GrazMI_Markers")),
-        marker_type=str(lsl_raw.get("marker_type", "Markers")),
-        signal_name=str(lsl_raw.get("signal_name", "gHIamp_EEG")),
-        signal_type=str(lsl_raw.get("signal_type", "EEG")),
-        decoder_name=str(lsl_raw.get("decoder_name", raw.get("decoder_outlet_name", "Signal"))),
-        decoder_type=str(lsl_raw.get("decoder_type", raw.get("decoder_outlet_type", "BCI"))),
-    )
-    runtime = RuntimeConfig(
-        simulate_signal=bool(runtime_raw.get("simulate_signal", True)),
-        start_mode=str(runtime_raw.get("start_mode", "full_loop")),
-    )
-    protocol = _protocol(raw)
-
-    sim_signal = SimSignalConfig(
-        fs=fs_hz,
-        channels=n_channels,
-        chunk=int(_get(raw, "sim_chunk", _nested(raw, "sim_signal", "chunk", 10))),
-        noise_std=float(_get(raw, "sim_noise_std", _nested(raw, "sim_signal", "noise_std", 0.8))),
-    )
-    sim_burst = SimBurstConfig(
-        freq=float(_get(raw, "sim_burst_freq_hz", _nested(raw, "sim_burst", "freq", 10.0))),
-        amp=float(_get(raw, "sim_burst_amp", _nested(raw, "sim_burst", "amp", 1.5))),
-        dur=trial_duration_s,
-        taper_frac=float(_get(raw, "sim_taper_frac", _nested(raw, "sim_burst", "taper_frac", 0.2))),
-    )
-    sim_profiles = SimProfilesConfig(
-        left_mi=tuple(_get(raw, "sim_profile_left_mi", _nested(raw, "sim_profiles", "left_mi", [1.0, 0.3]))),
-        both_mi=tuple(_get(raw, "sim_profile_both_mi", _nested(raw, "sim_profiles", "both_mi", [1.0, 1.0]))),
-        right_mi=tuple(_get(raw, "sim_profile_right_mi", _nested(raw, "sim_profiles", "right_mi", [0.3, 1.0]))),
-    )
+        raise ValueError("Etapa deve ser single_target ou two_legs.")
+    target = p.get("online_target", "right")
+    if target not in {"left", "right"}:
+        raise ValueError("online_target deve ser left ou right.")
+    protocol_values = {key: value for key, value in p.items() if key in ProtocolConfig.__dataclass_fields__}
+    protocol_values["training_mode"] = "target_vs_rest" if stage == "single_target" else "left_right_vs_rest"
+    protocol_values["online_target"] = target
+    protocol = ProtocolConfig(**protocol_values)
+    lsl = LSLConfig("GrazMI_Markers", "Markers", "gHIamp_EEG", "EEG")
+    for key, value in raw.get("lsl", {}).items():
+        if key not in LSLConfig.__dataclass_fields__:
+            raise ValueError(f"Campo LSL desconhecido: {key}")
+        setattr(lsl, key, value)
+    cmap = {1: "BASELINE", 2: "ATTENTION", 3: "LEFT_MI_STIM", 4: "RIGHT_MI_STIM", 5: "ATTEMPT", 6: "REST", 7: "BOTH_MI_STIM", 8: "REST_STIM", 99: "BLOCK_END"}
+    cmap.update({int(k): v for k, v in raw.get("codes", {}).get("map", {}).items()})
+    cr = raw.get("codes", {})
     codes = CodesConfig(
-        left_mi=int(codes_raw.get("left_mi", 3)),
-        both_mi=int(codes_raw.get("both_mi", 7)),
-        right_mi=int(codes_raw.get("right_mi", 4)),
-        rest_stim=int(codes_raw.get("rest_stim", 8)),
-        attempt=int(codes_raw.get("attempt", 5)),
-        block_end=int(codes_raw.get("block_end", 99)),
-        code_map=code_map,
+        left_mi=int(cr.get("left_mi", 3)), right_mi=int(cr.get("right_mi", 4)),
+        both_mi=7, rest_stim=int(cr.get("rest_stim", 8)), attempt=int(cr.get("attempt", 5)),
+        block_end=int(cr.get("block_end", 99)), code_map=cmap,
     )
-    model = ModelConfig(
-        fs_hz=fs_hz,
-        bp_order=bp_order,
-        bp_band=bp_band_hz,
-        epoch_s=window_s,
-        trial_offset_s=trial_offset_s,
-        pca_dim=pca_dim,
-        svc_c=svc_c,
-        rng_seed=rng_seed,
-        cv_splits=cv_splits,
-        select_by=select_by,
-        index_base=index_base,
-        select_channels=select_channels,
-    )
-    check_data = CheckDataConfig(
-        select_channels=select_channels,
-        hp_cutoff_hz=float(_nested(raw, "check_data", "hp_cutoff_hz", 0.5)),
-        hp_order=bp_order,
-        tmin=float(_get(raw, "check_tmin_s", _nested(raw, "check_data", "tmin", -0.5))),
-        tmax=trial_duration_s,
-        baseline_s=float(_nested(raw, "check_data", "baseline_s", 0.0)),
-        save_png=bool(_get(raw, "check_save_png", _nested(raw, "check_data", "save_png", True))),
-    )
-    decoder = DecoderConfig(
-        epoch_s=window_s,
-        step_s=step_s,
-        band_hz=bp_band_hz,
-        filter_order=bp_order,
-        outlet_name=str(_get(raw, "decoder_outlet_name", _nested(raw, "decoder", "outlet_name", lsl.decoder_name))),
-        outlet_type=str(_get(raw, "decoder_outlet_type", _nested(raw, "decoder", "outlet_type", lsl.decoder_type))),
-        lsl_rate_hz=float(_get(raw, "decoder_lsl_rate_hz", _nested(raw, "decoder", "lsl_rate_hz", 64.0))),
-    )
-
-    enriched = copy.deepcopy(raw)
-    enriched.setdefault("protocol", {})
-    enriched["protocol"]["trial_duration_s"] = trial_duration_s
-    enriched.setdefault("model", {})
-    enriched["model"].update({
-        "fs_hz": fs_hz,
-        "bp_order": bp_order,
-        "bp_band": bp_band_hz,
-        "epoch_s": window_s,
-        "step_s": step_s,
-        "trial_offset_s": trial_offset_s,
-        "pca_dim": pca_dim,
-        "svc_c": svc_c,
-        "rng_seed": rng_seed,
-        "cv_splits": cv_splits,
-        "select_by": select_by,
-        "index_base": index_base,
-        "select_channels": select_channels,
-    })
-    enriched.setdefault("decoder", {})
-    enriched["decoder"].update({
-        "epoch_s": window_s,
-        "step_s": step_s,
-        "band_hz": bp_band_hz,
-        "filter_order": bp_order,
-        "outlet_name": decoder.outlet_name,
-        "outlet_type": decoder.outlet_type,
-        "lsl_rate_hz": decoder.lsl_rate_hz,
-    })
-
+    if cmap.get(protocol.block_end_code) != protocol.block_end_label:
+        raise ValueError("Código/label BLOCK_END inconsistente.")
     return AppConfig(
-        experiment=exp,
-        lsl=lsl,
-        runtime=runtime,
-        protocol=protocol,
-        sim_signal=sim_signal,
-        sim_burst=sim_burst,
-        sim_profiles=sim_profiles,
+        experiment=exp, lsl=lsl, runtime=RuntimeConfig(**raw.get("runtime", {"simulate_signal": True})), protocol=protocol,
+        sim_signal=SimSignalConfig(fs, values["n_channels"], raw.get("sim_chunk", 10), raw.get("sim_noise_std", 0.8)),
+        sim_burst=SimBurstConfig(raw.get("sim_burst_freq_hz", 10.0), raw.get("sim_burst_amp", 1.5), values["trial_duration_s"], raw.get("sim_taper_frac", 0.2)),
+        sim_profiles=SimProfilesConfig(tuple(raw.get("sim_profile_left_mi", [1.0, .3])), (1., 1.), tuple(raw.get("sim_profile_right_mi", [.3, 1.0]))),
         codes=codes,
-        model=model,
-        check_data=check_data,
-        decoder=decoder,
-        fs_hz=fs_hz,
-        n_channels=n_channels,
-        trial_duration_s=trial_duration_s,
-        trial_offset_s=trial_offset_s,
-        window_s=window_s,
-        step_s=step_s,
-        filter_mode=filter_mode,
-        bp_order=bp_order,
-        bp_band_hz=bp_band_hz,
-        select_by=select_by,
-        index_base=index_base,
-        select_channels=select_channels,
-        feature_space=feature_space,
-        classifier=classifier,
-        pca_dim=pca_dim,
-        svc_c=svc_c,
-        cv_splits=cv_splits,
-        rng_seed=rng_seed,
-        _raw_config=enriched,
+        decoder=DecoderConfig(window, step, values["bp_band_hz"], values["bp_order"], raw.get("decoder_outlet_name", lsl.decoder_name), raw.get("decoder_outlet_type", lsl.decoder_type), raw.get("decoder_lsl_rate_hz", 64.)),
+        **values, _raw_config=raw,
     )
+
+
+def expected_signal_channels(cfg):
+    if cfg.runtime.simulate_signal:
+        return cfg.sim_signal.channels
+    from .input_hiamp import get_hiamp_acquisition_channels, get_output_indices
+    return len(get_output_indices(cfg, get_hiamp_acquisition_channels(cfg)))

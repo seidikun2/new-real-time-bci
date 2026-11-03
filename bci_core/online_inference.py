@@ -1,17 +1,7 @@
 # -*- coding: utf-8 -*-
-"""
-online_inference.py
+"""Inferência causal contínua: SVM no espaço completo; PCA somente no dashboard."""
 
-Inferência contínua com a mesma lógica de feature do treino:
-- carrega cmean, PCA, classificador e meta do modelo;
-- usa window_s/epoch_s do modelo para a janela contínua;
-- usa step_s do modelo/config para a frequência de inferência;
-- aplica o mesmo filtro causal contínuo usado no treino;
-- publica rep1/rep2 + probabilidades contínuas LEFT/REST/RIGHT + flags de classes ativas;
-- rep1/rep2 são a representação FINAL do feedback (PCA puro hoje; alinhada no futuro).
-"""
-
-import os, re, glob, csv, json, time, threading, pickle, datetime as dt
+import os, csv, json, time, threading, pickle, datetime as dt
 from collections import deque
 from typing import List, Optional, Dict, Any
 
@@ -19,57 +9,17 @@ import numpy as np
 from scipy import signal
 from pyriemann.estimation import Covariances
 from pyriemann.tangentspace import tangent_space
-from pylsl import StreamInfo, StreamOutlet, StreamInlet, resolve_byprop, local_clock
+from pylsl import StreamInfo, StreamOutlet, local_clock
 
 from .config_models import AppConfig
+from .receive_data_log import resolve_signal, make_log_dir
+from .data import select_channel_indices as select_channels, lsl_channel_names
 from .representation_feedback import transform_online_representation
 from .feedback_contract import SIGNAL_CHANNELS, classifier_probabilities, signal_vector
 
 
 def log(msg: str) -> None:
     print(f"[decoder] {msg}")
-
-
-def _make_session_dir(cfg: AppConfig, mode: str) -> str:
-    root = os.path.join(cfg.experiment.log_root, cfg.experiment.subject_id, f"S{cfg.experiment.session_id}")
-    if str(mode).lower() in {"online", "realtime"} or str(cfg.experiment.session_type).startswith("IM_online"):
-        return os.path.join(root, "online")
-    return os.path.join(root, cfg.experiment.session_type, mode)
-
-
-def _find_model_prefix(cfg: AppConfig, explicit_prefix: Optional[str] = None) -> str:
-    # Novo formato: uma pasta de modelo contém classifier.pkl/pca.pkl/riemann_mean.pkl.
-    if explicit_prefix is not None:
-        if os.path.isdir(explicit_prefix) and os.path.exists(os.path.join(explicit_prefix, "classifier.pkl")):
-            return explicit_prefix
-        if os.path.isdir(explicit_prefix):
-            # Compatibilidade com pastas antigas que continham *_classifier.pkl.
-            cands = glob.glob(os.path.join(explicit_prefix, "*_classifier.pkl"))
-            if cands:
-                return re.sub(r"_classifier\.pkl$", "", max(cands, key=os.path.getmtime))
-        return explicit_prefix
-
-    session_root = os.path.join(cfg.experiment.log_root, cfg.experiment.subject_id, f"S{cfg.experiment.session_id}")
-    train_dir = _make_session_dir(cfg, mode="train")
-
-    # Formato atual: train/_model/<run_id>/.
-    model_root = os.path.join(train_dir, "_model")
-    if os.path.isdir(model_root):
-        dirs = [d for d in glob.glob(os.path.join(model_root, "*")) if os.path.isdir(d) and os.path.exists(os.path.join(d, "classifier.pkl"))]
-        if dirs:
-            return max(dirs, key=os.path.getmtime)
-
-    # Compatibilidade com v3/v3.1.
-    legacy_model_root = os.path.join(session_root, "models", cfg.experiment.session_type)
-    if os.path.isdir(legacy_model_root):
-        dirs = [d for d in glob.glob(os.path.join(legacy_model_root, "*")) if os.path.isdir(d) and os.path.exists(os.path.join(d, "classifier.pkl"))]
-        if dirs:
-            return max(dirs, key=os.path.getmtime)
-
-    cands = glob.glob(os.path.join(train_dir, "*_classifier.pkl"))
-    if not cands:
-        raise FileNotFoundError(f"Não encontrei modelo em {model_root}, {legacy_model_root} ou formato antigo em {train_dir}")
-    return re.sub(r"_classifier\.pkl$", "", max(cands, key=os.path.getmtime))
 
 
 def _artifact_paths(model_ref: str) -> tuple[str, str, str, str]:
@@ -109,24 +59,13 @@ def read_model_meta(prefix_or_dir: str) -> Dict[str, Any]:
     _, _, _, meta_p = _artifact_paths(prefix_or_dir)
     try:
         with open(meta_p, "r", encoding="utf-8") as f:
-            return json.load(f)
+            meta = json.load(f)
+        if os.path.isdir(prefix_or_dir):
+            meta["pca_map_json"] = os.path.abspath(os.path.join(prefix_or_dir, "pca_map.json"))
+            meta["pca_map_png"] = os.path.abspath(os.path.join(prefix_or_dir, "pca_map.png"))
+        return meta
     except Exception:
         return {}
-
-
-def resolve_signal_inlet(name: str, stype: str = "EEG", timeout: float = 3.0) -> StreamInlet:
-    label = f"name='{name}'" if name else f"type='{stype}'"
-    log(f"Procurando stream LSL do sinal ({label}) ...")
-    while True:
-        streams = resolve_byprop("name", name, timeout=timeout) if name else []
-        if not streams and stype:
-            streams = resolve_byprop("type", stype, timeout=timeout)
-        if streams:
-            si = streams[0]
-            log(f"Conectado ao sinal: name={si.name()}, type={si.type()}, ch={si.channel_count()}, fs={si.nominal_srate():.2f}")
-            return StreamInlet(si, recover=True)
-        log("  Sinal não encontrado; tentando novamente em 1s ...")
-        time.sleep(1.0)
 
 
 def make_outlet_unified(
@@ -165,34 +104,10 @@ def make_outlet_unified(
 
     root.append_child_value("decoder_semantics", ",".join(SIGNAL_CHANNELS))
     root.append_child_value("feedback_mode", str(feedback_mode))
-    root.append_child_value("feedback_enabled", "true" if str(feedback_mode).lower() == "pca" else "false")
+    root.append_child_value("feedback_enabled", "false")
+    root.append_child_value("representation_audience", "experimenter")
 
     return StreamOutlet(info)
-
-
-def get_lsl_channel_names(info) -> List[str]:
-    C = int(info.channel_count())
-    try:
-        chs = info.desc().child("channels")
-        names = []
-        ch = chs.child("channel") if chs is not None else None
-        while ch is not None and ch.name() == "channel":
-            lab = (ch.child_value("label") or "").strip()
-            names.append(lab if lab else None)
-            ch = ch.next_sibling()
-        names = [names[i] if i < len(names) and names[i] else f"ch{i+1}" for i in range(C)]
-        return names
-    except Exception:
-        return [f"ch{i+1}" for i in range(C)]
-
-
-def select_channel_indices(selection: List[int], ch_names: List[str], index_base: int = 1) -> List[int]:
-    if not selection:
-        return list(range(len(ch_names)))
-    idx = [int(v) - (1 if index_base == 1 else 0) for v in selection]
-    if any(i < 0 or i >= len(ch_names) for i in idx):
-        raise ValueError(f"Índice de canal fora do range após base={index_base}: {selection}")
-    return idx
 
 
 def design_bandpass(fs: float, order: int, band) -> np.ndarray:
@@ -202,10 +117,10 @@ def design_bandpass(fs: float, order: int, band) -> np.ndarray:
     return signal.butter(order, [low, high], btype="bandpass", fs=fs, output="sos")
 
 
-def window_to_feature(X_win_CxT: np.ndarray, cmean, pca) -> np.ndarray:
+def window_to_feature(X_win_CxT: np.ndarray, cmean) -> np.ndarray:
     cov = Covariances("oas").transform(X_win_CxT[None, ...])
     ts  = tangent_space(cov, cmean)
-    return pca.transform(ts)[0]
+    return ts[0]
 
 
 def timestamp_iso_from_lsl(lsl_time_s: float, unix_offset: float) -> str:
@@ -213,9 +128,9 @@ def timestamp_iso_from_lsl(lsl_time_s: float, unix_offset: float) -> str:
 
 
 def open_csv_logger(cfg: AppConfig, mode: str, feedback_mode: str = "pca"):
-    out_dir = _make_session_dir(cfg, mode)
+    out_dir = make_log_dir(cfg, mode)
     os.makedirs(out_dir, exist_ok=True)
-    stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     core = f"{cfg.experiment.subject_id}_{cfg.experiment.exp_name}_S{cfg.experiment.session_id}_{cfg.experiment.session_type}_decoder"
     path = os.path.join(out_dir, f"{core}_{stamp}.csv")
     f = open(path, "w", newline="", encoding="utf-8")
@@ -238,51 +153,45 @@ def class_outputs(clf, feat: np.ndarray, model_meta: Dict[str, Any]):
     return classifier_probabilities(clf, feat, model_meta)
 
 
-def run_realtime_decoder(cfg: AppConfig, mode: str = "online", model_prefix: Optional[str] = None, stop_event: Optional[threading.Event] = None, feedback_mode: str = "pca"):
+def run_realtime_decoder(cfg: AppConfig, mode: str = "online", model_prefix: Optional[str] = None, stop_event: Optional[threading.Event] = None, feedback_mode: str = "none", ready_event=None):
     if stop_event is None:
         stop_event = threading.Event()
 
     decfg = cfg.decoder
-    mcfg  = cfg.model
+    mcfg  = cfg
 
-    prefix = _find_model_prefix(cfg, explicit_prefix=model_prefix)
+    if not model_prefix:
+        raise ValueError("Escolha explicitamente um modelo antes do online.")
+    prefix = model_prefix
     cmean, pca, clf = load_artifacts(prefix)
     meta = read_model_meta(prefix)
 
-    inlet = resolve_signal_inlet(name=cfg.lsl.signal_name, stype=cfg.lsl.signal_type)
+    if meta.get("classifier_input") != "tangent_space":
+        raise ValueError("Modelo antigo classifica em PCA. Retreine os dados para usar o espaço completo.")
+    inlet = resolve_signal(cfg, stop_event)
     info = inlet.info()
     fs   = float(info.nominal_srate())
     if fs <= 0:
         raise RuntimeError("Fs nominal inválida no stream LSL.")
-    ch_all = get_lsl_channel_names(info)
+    ch_all = lsl_channel_names(info)
     log(f"Fs stream={fs:.2f} Hz | canais={ch_all}")
 
-    train_ch_names = meta.get("channels_selected", []) if isinstance(meta, dict) else []
-    if train_ch_names:
-        name_to_idx = {str(n).strip().lower(): i for i, n in enumerate(ch_all)}
-        missing = [ch for ch in train_ch_names if str(ch).strip().lower() not in name_to_idx]
-        if missing:
-            log(f"AVISO: canais do modelo não encontrados no stream: {missing}. Usando cfg.model.select_channels.")
-            sel_idx = select_channel_indices(mcfg.select_channels or [], ch_all, index_base=1)
-        else:
-            sel_idx = [name_to_idx[str(ch).strip().lower()] for ch in train_ch_names]
-    else:
-        sel_idx = select_channel_indices(mcfg.select_channels or [], ch_all, index_base=1)
+    train_ch_names = meta["channels_selected"]
+    sel_idx = select_channels("name", train_ch_names, ch_all)
     ch_sel = [ch_all[i] for i in sel_idx]
     log(f"Canais usados: {ch_sel}")
 
     filt_meta = meta.get("filter", {}) if isinstance(meta, dict) else {}
-    band_hz   = filt_meta.get("band_hz", getattr(mcfg, "bp_band", decfg.band_hz))
+    band_hz   = filt_meta.get("band_hz", getattr(mcfg, "bp_band_hz", decfg.band_hz))
     order     = int(filt_meta.get("order", getattr(mcfg, "bp_order", decfg.filter_order)))
-    window_s  = float(meta.get("window_s", meta.get("epoch_s", getattr(mcfg, "epoch_s", decfg.epoch_s))))
+    window_s  = float(meta.get("window_s", meta.get("epoch_s", getattr(mcfg, "window_s", decfg.epoch_s))))
     step_s    = float(meta.get("step_s", getattr(decfg, "step_s", 0.05)))
     train_fs  = float(meta.get("fs_hz", fs)) if isinstance(meta, dict) else fs
     if abs(fs - train_fs) > 1e-3:
-        log(f"AVISO: fs stream={fs:.2f} Hz diferente do fs do modelo={train_fs:.2f} Hz.")
+        raise ValueError(f"Fs stream={fs:.2f} Hz diferente do modelo={train_fs:.2f} Hz.")
 
     sos = design_bandpass(fs, order, band_hz)
-    zi = signal.sosfilt_zi(sos)
-    zf = np.repeat(zi[:, :, None], len(sel_idx), axis=2)
+    zf = np.zeros((sos.shape[0], 2, len(sel_idx)))
 
     win_n = int(round(window_s * fs))
     hop_n = max(1, int(round(step_s * fs)))
@@ -294,7 +203,7 @@ def run_realtime_decoder(cfg: AppConfig, mode: str = "online", model_prefix: Opt
     outlet = make_outlet_unified(
         name=decfg.outlet_name,
         stype=decfg.outlet_type,
-        srate=max(0.0, float(decfg.lsl_rate_hz)),
+        srate=1.0 / step_s,
         representation_meta=rep_meta,
         feedback_mode=feedback_mode,
     )
@@ -308,7 +217,7 @@ def run_realtime_decoder(cfg: AppConfig, mode: str = "online", model_prefix: Opt
         )
     else:
         log("Modelo antigo sem bloco 'representation': usando PCA identity nos canais rep1/rep2.")
-    log(f"Modo online: {feedback_mode} | feedback PCA no Unity={'ON' if str(feedback_mode).lower() == 'pca' else 'OFF'}")
+    log("Classificação no espaço tangente completo; PCA apenas para o experimentador.")
     fcsv, wcsv, _ = open_csv_logger(cfg, mode, feedback_mode=feedback_mode)
     unix_offset = time.time() - local_clock()
 
@@ -316,6 +225,7 @@ def run_realtime_decoder(cfg: AppConfig, mode: str = "online", model_prefix: Opt
     buf_t = deque(maxlen=win_n)
     n_samples = 0
     next_compute = win_n
+    previous_stamp = None
 
     try:
         while not stop_event.is_set():
@@ -326,6 +236,13 @@ def run_realtime_decoder(cfg: AppConfig, mode: str = "online", model_prefix: Opt
             X = np.asarray(data, dtype=float)
             if X.ndim != 2 or X.shape[1] <= max(sel_idx):
                 continue
+            if not np.isfinite(X).all():
+                raise ValueError("EEG contém NaN/Inf. Bloco interrompido; inspecione os canais.")
+            if not np.isfinite(ts).all() or np.any(np.diff(ts) <= 0):
+                raise ValueError("Timestamps EEG inválidos durante inferência.")
+            if (previous_stamp is not None and ts[0] - previous_stamp > max(.1, 1.5/fs)) or np.any(np.diff(ts) > max(.1, 1.5/fs)):
+                raise ValueError("Lacuna no EEG durante inferência. Inspecione aquisição antes de continuar.")
+            previous_stamp = ts[-1]
             X_sel = X[:, sel_idx]
 
             # Mesmo tipo de filtro do treino: causal contínuo, preservando estado.
@@ -338,20 +255,23 @@ def run_realtime_decoder(cfg: AppConfig, mode: str = "online", model_prefix: Opt
 
                 if n_samples >= next_compute and len(buf_X) >= win_n:
                     X_win = np.vstack(buf_X)  # (T,C), já filtrado
-                    feat = window_to_feature(X_win.T, cmean, pca)
+                    feat = window_to_feature(X_win.T, cmean)
+                    visual = pca.transform(feat[None, :])[0]
                     pca_dim = int(getattr(pca, "n_components_", getattr(pca, "n_components", 2)) or 2)
-                    p1_raw = float(feat[0]) if pca_dim >= 1 else 0.0
-                    p2_raw = float(feat[1]) if pca_dim >= 2 else 0.0
+                    p1_raw = float(visual[0]) if pca_dim >= 1 else 0.0
+                    p2_raw = float(visual[1]) if pca_dim >= 2 else 0.0
 
                     # MESMO transform usado para gerar as densidades do treino.
-                    # O Unity recebe somente o espaço final; ele não conhece PCA/alinhamento.
-                    rep = transform_online_representation(feat, meta)
+                    # Coordenadas servem apenas ao dashboard do experimentador.
+                    rep = transform_online_representation(visual, meta)
                     rep1 = float(rep[0])
                     rep2 = float(rep[1])
 
                     probs, active = class_outputs(clf, feat, meta)
                     vec = signal_vector(rep1, rep2, probs, active)
-                    outlet.push_sample(vec, timestamp=local_clock())
+                    outlet.push_sample(vec, timestamp=float(buf_t[-1]))
+                    if ready_event is not None:
+                        ready_event.set()
 
                     t_out = float(buf_t[-1])
                     recv_time_s = time.time()
@@ -376,6 +296,7 @@ def run_realtime_decoder(cfg: AppConfig, mode: str = "online", model_prefix: Opt
     except KeyboardInterrupt:
         log("Ctrl+C recebido.")
     finally:
+        inlet.close_stream()
         try:
             fcsv.close()
         except Exception:

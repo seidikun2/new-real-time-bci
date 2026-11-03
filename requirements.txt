@@ -1,3 +1,4 @@
+-c requirements-lock.txt
 numpy
 scipy
 scikit-learn
@@ -5,3 +6,4 @@ matplotlib
 PyYAML
 pylsl
 pyriemann
+pandas

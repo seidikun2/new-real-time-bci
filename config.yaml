@@ -4,14 +4,14 @@
 # Uso normal:
 #   1) ajuste sujeito/sessão;
 #   2) escolha protocol.stage;
-#   3) rode: python main.py
+#   3) execute "BCI: conduzir experimento" no VS Code (F5).
 #
 # ETAPA 1 — single_target
-#   EM_treino -> IM_treino -> online target com feedback -> sem feedback
+#   EM_treino -> IM_treino -> online target bloco 1 -> bloco 2
 #   Modelo: perna-alvo vs REST_STIM
 #
 # ETAPA 2 — two_legs
-#   EM_treino -> IM_treino -> online com feedback -> online sem feedback
+#   EM_treino -> IM_treino -> online bloco 1 -> bloco 2
 #   Modelo: LEFT vs RIGHT vs REST_STIM
 #
 # As duas etapas têm exatamente a mesma sequência. O que muda é somente
@@ -28,14 +28,14 @@ experiment:
   session_id    : 1
   exp_name      : "TEST"
   session_type  : "IM_treino"   # o main altera conforme a fase
-  log_root      : "/home/seidi/dados_seidi"
+  log_root      : "Dados"
 
 runtime:
   simulate_signal  : true        # true = simulação; false = g.HIamp
 
 protocol:
   stage          : "single_target"  # single_target | two_legs
-  start_phase    : "imagery"           # auto | execution | imagery | online
+  start_phase    : "auto"              # auto | execution | imagery | online
 
   # Usado somente em single_target.
   online_target  : "right"          # left | right
@@ -50,34 +50,36 @@ protocol:
   motor_session_type   : "EM_treino"
   imagery_session_type : "IM_treino"
 
-  # Online da ETAPA 1.
+  # Online da ETAPA 1. PCA é mostrado somente ao experimentador nos dois blocos.
   online_modes_single_target:
     - name          : "target_feedback"
-      label         : "Online target com feedback PCA"
+      label         : "Online target — bloco 1"
       session_type  : "IM_online_target_PCA"
-      feedback_mode : "pca"
 
     - name          : "target_no_feedback"
-      label         : "Online target sem feedback"
+      label         : "Online target — bloco 2"
       session_type  : "IM_online_target_sem_feedback"
-      feedback_mode : "none"
 
   # Online da ETAPA 2 — mesma sequência da etapa 1.
   online_modes_two_legs:
     - name          : "two_legs_feedback"
-      label         : "Online duas pernas com feedback PCA"
+      label         : "Online duas pernas — bloco 1"
       session_type  : "IM_online_duas_pernas_PCA"
-      feedback_mode : "pca"
 
     - name          : "two_legs_no_feedback"
-      label         : "Online duas pernas sem feedback"
+      label         : "Online duas pernas — bloco 2"
       session_type  : "IM_online_duas_pernas_sem_feedback"
-      feedback_mode : "none"
+
+  # 15 tentativas por classe = 45 trials, como os 3 ciclos antigos de 5.
+  trials_per_class : 15
+  baseline_s       : 3.0
+  attention_s      : 2.0
+  cue_s            : 1.25
+  rest_s           : 2.0
+  startup_timeout_s: 30.0
+  signal_stall_s   : 3.0
 
   min_cv_accuracy      : null
-  auto_check_data      : true
-  online_model_prefix  : "latest"      # sempre usa o IM_treino mais recente
-  model_session_types  : ["IM_treino"]
 
 # #############################################################################
 # CONFIGURAÇÕES TÉCNICAS / AVANÇADAS
@@ -91,27 +93,6 @@ lsl:
   decoder_name  : "Signal"
   decoder_type  : "BCI"
 
-psychopy:
-  enabled                 : true
-  mode                    : "psyexp"
-  experiment_file         : "experiment/Graz_UpperLimb.psyexp"
-  generated_script        : "experiment/Graz_UpperLimb_autorun.py"
-  fallback_script         : null
-  stim_sequence           : "experiment/stims_sequence.csv"
-  python_executable       : null
-  compile_version         : null
-  compile_if_changed      : true
-  inject_session_info     : true
-  hide_info_dialog        : true
-  new_console             : false
-  pre_launch_pause_s      : 2.0
-  startup_grace_s         : 10.0
-  startup_status_every_s  : 5.0
-  startup_timeout_s       : 90.0
-  marker_stall_timeout_s  : 60.0
-  exit_grace_s            : 5.0
-  max_block_duration_s    : null
-
 fs_hz                    : 256.0
 n_channels               : 16
 trial_duration_s         : 3.75
@@ -124,7 +105,7 @@ bp_band_hz               : [5.0, 40.0]
 select_by                : "index"
 index_base               : 1
 select_channels          : []
-feature_space            : "riemann_pca"
+feature_space            : "riemann"
 classifier               : "svm_linear"
 pca_dim                  : 2
 svc_c                    : 1.0
@@ -132,17 +113,12 @@ cv_splits                : 5
 rng_seed                 : 42
 decoder_outlet_name      : "Signal"
 decoder_outlet_type      : "BCI"
-decoder_lsl_rate_hz      : 64.0
 
 representation_feedback:
-  dimensions      : 2
-  name            : "PCA"
   pad_frac        : 0.10
   grid_size       : 240
   density_masses  : [0.50, 0.80, 0.95]
   show_labels     : true
-  transform:
-    type: "identity"
 
 # Signal / BCI publica sempre:
 # [rep1, rep2, p_left, p_rest, p_right, active_left, active_rest, active_right]
@@ -151,20 +127,15 @@ control:
   enabled                     : true
   outlet_name                 : "GrazMI_Control"
   outlet_type                 : "BCIControl"
-  entry_density_mass          : 0.50
-  hold_density_mass           : 0.80
   enter_persist_s             : 0.10
   exit_persist_s              : 0.10
   min_probability             : 0.40
   min_probability_margin      : 0.05
-  allow_probability_fallback  : true
   movement_rise_s             : 1.00
   movement_fall_s             : 0.80
   output_rate_hz              : 60.0
   decoder_stale_s             : 0.60
 
-check_tmin_s    : -0.5
-check_save_png  : true
 
 # Sinal simulado. REST_STIM = ruído/basal, sem burst motor.
 sim_chunk             : 10
@@ -173,7 +144,6 @@ sim_burst_freq_hz     : 10.0
 sim_burst_amp         : 1.5
 sim_taper_frac        : 0.2
 sim_profile_left_mi   : [1.0, 0.3]
-sim_profile_both_mi   : [1.0, 1.0]   # legado
 sim_profile_right_mi  : [0.3, 1.0]
 
 # Marcadores do protocolo.
@@ -181,7 +151,6 @@ sim_profile_right_mi  : [0.3, 1.0]
 codes:
   left_mi    : 3
   right_mi   : 4
-  both_mi    : 7      # legado; não aparece na sequência atual
   rest_stim  : 8
   attempt    : 5
   block_end  : 99
@@ -206,9 +175,16 @@ hiamp:
 
 debug_plot:
   enabled          : true
-  script           : "tools/plot_decoder_realtime.py"
-  new_console      : false
   # Dashboard secundária do experimentador. A inferência continua na taxa normal;
   # apenas a GUI é atualizada mais devagar para permanecer leve e responsiva.
   plot_hz          : 5.0      # só a GUI; decoder continua na taxa normal
-  show_markers     : true
+
+# Limites heurísticos. Ajuste a unidade conforme o stream real (g.HIamp: conferir).
+quality:
+  unit: "uV"
+  peak_to_peak_limit: 200.0
+  flat_std_limit: 0.01
+  max_line_noise_ratio: 0.25
+  max_high_frequency_ratio: 0.35
+  max_robust_z: 8.0
+  max_bad_window_fraction: 0.20
