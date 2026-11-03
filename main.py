@@ -11,6 +11,7 @@ from pathlib import Path
 from queue import Queue, Empty
 
 from bci_core.config_models import load_config
+from bci_core.acquisition import source_name, recording_config
 from bci_core.protocol import MarkerPublisher, build_schedule, run_schedule
 from bci_core.receive_data_log import BlockRecorder
 from bci_core.realtime_signal_transmit import run_transmission as simulate_signal
@@ -170,7 +171,9 @@ def run_block(cfg, mode='train', model_ref=None, block_index=0, operator=None):
             if time.monotonic() > deadline:
                 raise TimeoutError(f'{label} não ficou pronto em {timeout} segundos.')
     try:
-        start(simulate_signal if cfg.runtime.simulate_signal else acquire_hiamp, cfg, mode, stop)
+        source = source_name(cfg)
+        if source in {'simulator', 'hiamp'}:
+            start(simulate_signal if source == 'simulator' else acquire_hiamp, cfg, mode, stop)
         start(recorder.record, stop)
         ready(recorder.ready, 'Gravação EEG')
         if model_ref:
@@ -214,7 +217,7 @@ def run_block(cfg, mode='train', model_ref=None, block_index=0, operator=None):
                 dashboard.kill()
                 dashboard.wait()
         metadata = {'complete': complete, 'reason': reason, 'active_model': model_ref,
-                    'samples': recorder.samples, 'config': {**cfg._raw_config, 'experiment': asdict(cfg.experiment)},
+                    'samples': recorder.samples, 'stream': recorder.stream_metadata, 'config': {**cfg._raw_config, 'experiment': asdict(cfg.experiment)},
                     'effective_config': {key: value for key, value in asdict(cfg).items() if key != '_raw_config'},
                     'schedule': [event.__dict__ for event in events], 'block_index': block_index}
         recorder.signal_path.with_suffix('.json').write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding='utf-8')
@@ -223,6 +226,7 @@ def run_block(cfg, mode='train', model_ref=None, block_index=0, operator=None):
 
 
 def analyze_block(cfg, block, operator=None):
+    cfg = recording_config(cfg, block['signal_file'])
     pair = (block['markers_file'], block['signal_file'])
     qc = run_check_data(cfg, markers_file=pair[0], signal_file=pair[1])
     if operator:
@@ -257,7 +261,7 @@ def run_experiment(cfg, operator):
     phase = p.start_phase if p.start_phase != 'auto' else 'execution'
     if phase not in {'execution', 'imagery', 'online'}:
         raise ValueError('start_phase deve ser auto, execution, imagery ou online.')
-    operator.notify(f'Sujeito: {cfg.experiment.subject_id} | sessão: {cfg.experiment.session_id}\nEtapa: {p.stage} | alvo: {p.online_target}\nAquisição: {"SIMULADA" if cfg.runtime.simulate_signal else "g.HIamp"}\n\nAbra o Unity antes de iniciar os blocos. O Python enviará os marcadores e controlará os tempos.')
+    operator.notify(f'Sujeito: {cfg.experiment.subject_id} | sessão: {cfg.experiment.session_id}\nEtapa: {p.stage} | alvo: {p.online_target}\nAquisição: {source_name(cfg)}\n\nAbra o Unity antes de iniciar os blocos. O Python enviará os marcadores e controlará os tempos.')
     blocks = []
     if phase == 'execution':
         blocks.append(('Execução motora', p.motor_session_type, 'train'))
@@ -305,6 +309,7 @@ def main():
     if args.smoke:
         from tempfile import mkdtemp
         cfg.runtime.simulate_signal = True
+        cfg.runtime.source = 'simulator'
         cfg.experiment.log_root = args.output or mkdtemp(prefix='bci-smoke-')
         cfg.n_channels = cfg.sim_signal.channels = 4
         cfg.trial_duration_s = cfg.sim_burst.dur = .4

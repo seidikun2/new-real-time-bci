@@ -59,6 +59,11 @@ def prepare_training_representation(X_base, y, cfg, out_dir, class_labels=None, 
         regions.append({'event_label': row.get('event_label', str(cls)),
                         'display_label': labels.get(int(cls), str(cls)), 'center': center.tolist(), 'regions': contours})
     ax.set(xlim=limits[0], ylim=limits[1])
+    fig.subplots_adjust(left=.13, right=.96, bottom=.12, top=.9)
+    ax.set(xlabel='PC1', ylabel='PC2', title='Mapa PCA · verificação do bloco')
+    ax.grid(alpha=.15)
+    fig.savefig(folder / 'pca_check.png')
+    fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
     ax.axis('off')
     png = folder / 'pca_map.png'
     fig.savefig(png)

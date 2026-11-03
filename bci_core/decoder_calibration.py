@@ -13,6 +13,7 @@ from sklearn.metrics import accuracy_score, balanced_accuracy_score, confusion_m
 from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.svm import SVC
 
+from .acquisition import recording_config
 from .class_schema import class_details, training_label_map
 from .data import (read_signal_csv, read_markers_csv, select_channel_indices,
                    bandpass_causal, attempts_by_class, epoch_trials_sliding)
@@ -59,6 +60,7 @@ def cross_validate(Xw, y, groups, svc_c, n_splits, seed=42):
             'balanced_accuracy': float(balanced_accuracy_score(y, predictions)),
             'trial_accuracy': float(accuracy_score(trial_true, trial_pred)),
             'confusion_matrix': confusion_matrix(y, predictions).tolist(),
+            'trial_confusion_matrix': confusion_matrix(trial_true, trial_pred, labels=np.unique(y)).tolist(),
             'class_order': np.unique(y).tolist(), 'trials': len(trial_true), 'windows': len(y)}
 
 
@@ -72,6 +74,7 @@ def fit_final_model(Xw, y, pca_dim=2, svc_c=1., seed=42):
 
 
 def run_calibration(cfg, markers_file, signal_file):
+    cfg = recording_config(cfg, signal_file)
     times, X, names = read_signal_csv(signal_file)
     tm, labels = read_markers_csv(markers_file, cfg.codes.code_map)
     if len(times) < 2 or not np.isfinite(times).all() or np.any(np.diff(times) <= 0):
@@ -119,6 +122,8 @@ def run_calibration(cfg, markers_file, signal_file):
         'window_s': cfg.window_s, 'step_s': cfg.step_s, 'trial_duration_s': cfg.trial_duration_s,
         'classes_map': label_map, 'classes': details, 'cv': cv,
         'representation': representation['meta'],
+        'pca_check_png': str(model_dir / 'pca_check.png'),
+        'pca_explained_variance_ratio': pca.explained_variance_ratio_.tolist(),
         'pca_map_json': str(model_dir / 'pca_map.json'), 'pca_map_png': str(model_dir / 'pca_map.png'),
         'pca_train_xlim': [representation['meta']['x_min'], representation['meta']['x_max']],
         'pca_train_ylim': [representation['meta']['y_min'], representation['meta']['y_max']],

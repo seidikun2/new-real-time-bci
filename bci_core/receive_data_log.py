@@ -5,8 +5,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from .config_models import expected_signal_channels
-from .data import lsl_channel_names
+from .acquisition import stream_layout
 
 from pylsl import StreamInlet, local_clock, resolve_byprop, proc_clocksync
 
@@ -19,13 +18,19 @@ def make_log_dir(cfg, mode):
 def resolve_signal(cfg, stop, timeout=30.):
     deadline = time.monotonic() + timeout
     while not stop.is_set() and time.monotonic() < deadline:
-        streams = resolve_byprop('name', cfg.lsl.signal_name, timeout=.2)
+        streams = resolve_byprop('name', cfg.lsl.signal_name, timeout=.2) if cfg.lsl.signal_name else resolve_byprop('type', cfg.lsl.signal_type, timeout=.2)
         matches = [s for s in streams if s.type() == cfg.lsl.signal_type]
+        source_id = getattr(cfg, '_signal_source_id', None)
+        if source_id:
+            matches = [s for s in matches if s.source_id() == source_id]
         if len(matches) > 1:
-            raise RuntimeError('Mais de um stream EEG com o mesmo nome. Feche a aquisição duplicada.')
+            raise RuntimeError('Mais de um stream EEG corresponde à seleção. Use Descobrir streams LSL para escolher o dispositivo.')
         if matches:
-            return StreamInlet(matches[0], processing_flags=proc_clocksync)
-    raise TimeoutError('EEG não encontrado. Verifique aquisição e nomes LSL.')
+            selected = matches[0]
+            cfg.lsl.signal_name = selected.name()
+            cfg._signal_source_id = selected.source_id()
+            return StreamInlet(selected, processing_flags=proc_clocksync)
+    raise TimeoutError('EEG não encontrado. Inicie o transmissor e confira nome/tipo LSL na tela inicial.')
 
 
 class BlockRecorder:
@@ -40,6 +45,7 @@ class BlockRecorder:
         self.ready = threading.Event()
         self.last_sample_at = None
         self.samples = 0
+        self.stream_metadata = None
         self.offset = time.time() - local_clock()
         self.marker_file = self.marker_path.open('x', newline='', encoding='utf-8')
         self.markers = csv.writer(self.marker_file)
@@ -55,18 +61,17 @@ class BlockRecorder:
         inlet = resolve_signal(self.cfg, stop, self.cfg._raw_config['protocol'].get('startup_timeout_s', 30.))
         try:
             info = inlet.info()
-            if info.channel_count() != expected_signal_channels(self.cfg) or abs(info.nominal_srate() - self.cfg.fs_hz) > .01:
-                raise ValueError(f'EEG: {info.channel_count()} canais/{info.nominal_srate()} Hz; confira config.yaml.')
+            indices, factors, self.stream_metadata = stream_layout(self.cfg, info)
             with self.signal_path.open('x', newline='', encoding='utf-8') as stream:
                 writer = csv.writer(stream)
-                writer.writerow(['iso_time', 'lsl_time_s', 'local_recv_s'] + lsl_channel_names(info))
+                writer.writerow(['iso_time', 'lsl_time_s', 'local_recv_s'] + self.stream_metadata['recorded_channels'])
                 while not stop.is_set():
                     samples, stamps = inlet.pull_chunk(timeout=.1, max_samples=1024)
                     if not stamps:
                         continue
                     now = time.time()
                     for sample, stamp in zip(samples, stamps):
-                        writer.writerow([datetime.fromtimestamp(stamp+self.offset).isoformat(), f'{stamp:.9f}', now, *sample])
+                        writer.writerow([datetime.fromtimestamp(stamp+self.offset).isoformat(), f'{stamp:.9f}', now, *(float(sample[i])*factor for i, factor in zip(indices, factors))])
                     stream.flush()
                     self.samples += len(stamps)
                     self.last_sample_at = time.monotonic()

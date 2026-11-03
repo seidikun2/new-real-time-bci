@@ -100,6 +100,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(events, {'LEFT_MI_STIM': [2.]})
 
     def test_quality_detects_flat_nan_line_noise_and_time_gaps(self):
+        self.cfg.runtime.simulate_signal = False
         fs = self.cfg.fs_hz
         times = np.arange(2048) / fs
         X = np.column_stack([np.zeros(len(times)), np.sin(2*np.pi*50*times), np.random.default_rng(0).normal(size=len(times))])

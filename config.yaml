@@ -31,6 +31,7 @@ experiment:
   log_root      : "Dados"
 
 runtime:
+  source           : null        # null usa simulate_signal; simulator | hiamp | eego | lsl
   simulate_signal  : true        # true = simulação; false = g.HIamp
 
 protocol:
@@ -188,3 +189,14 @@ quality:
   max_high_frequency_ratio: 0.35
   max_robust_z: 8.0
   max_bad_window_fraction: 0.20
+
+# Transmissor ANT Neuro externo: a taxa deve ser configurada também no streamer.
+eego:
+  signal_name: null       # descobrir pela interface; não pressupõe nome/serial
+  signal_type: "EEG"
+  fs_hz: 500.0
+  n_channels: 64          # quantidade total publicada, incluindo auxiliares se houver
+  receive_channels: []   # [] grava todos; exemplo [1, 2, 3] ou nomes (receive_by: name)
+  receive_by: "index"
+  index_base: 1
+  unit: "auto"           # lê metadados; se ausentes, informe uV, mV ou V

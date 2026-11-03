@@ -23,7 +23,7 @@ Em cada sessão:
 1. Abra a pasta do projeto e selecione o interpretador preparado.
 2. Em **Run and Debug**, selecione **BCI: conduzir experimento** e pressione **F5**.
 3. Na janela inicial, confira sujeito, sessão, etapa, perna-alvo, fase inicial e
-   aquisição simulada ou g.HIamp. Essas escolhas valem para a execução atual;
+   aquisição simulada, g.HIamp, ANT Neuro eego mylab ou outro stream LSL. Essas escolhas valem para a execução atual;
    os padrões continuam no YAML. Não há perguntas no prompt.
 4. Confirme cada bloco. A janela de acompanhamento mostra a gravação e permite
    **Interromper bloco e salvar**. Prefira esse botão ao encerramento forçado do VS Code.
@@ -92,6 +92,9 @@ locais confiáveis, pois os artefatos usam pickle.
 ## Qualidade em todos os blocos
 
 Cada bloco gera um `report.html`, `overview.png`, `quality.json` e `channels.csv`.
+Depois do treino, o relatório mostra o **mapa PCA do próprio bloco** e uma
+**matriz de confusão visual**, com contagem e porcentagem por classe. A tabela
+de canais fica abaixo dos gráficos e dos pontos de atenção.
 A análise considera todos os canais gravados, inclusive os que não foram
 selecionados para o classificador:
 
@@ -105,7 +108,9 @@ selecionados para o classificador:
 
 Os limites em `quality` são heurísticos e dependem da unidade/ganho do stream.
 O g.HIamp declara µV; confirme isso na estação real antes de usar limites absolutos.
-A simulação usa ruído branco, portanto alertas de alta frequência são esperados.
+A simulação usa ruído branco: as proporções espectrais são mostradas como
+informação, sem alertas fisiológicos de rede/EMG. NaN/Inf, flatlines, picos,
+duplicações, interrupções e erros de marcadores continuam gerando alertas.
 O gráfico bruto usa escala robusta por canal e limita a exibição de picos para
 facilitar a leitura; os valores originais e o pico a pico ficam nos CSVs/tabela.
 
@@ -147,6 +152,8 @@ registra conclusão/interrupção, configuração efetiva, sequência e modelo a
 
 - `main.py`: fluxo das fases, escolha do modelo e supervisão dos componentes.
 - `operator.py`: janelas de operação; `protocol.py`: sequência/tempos.
+- `acquisition.py`: perfis, descoberta LSL, seleção de canais e unidades.
+- `report.py` e `report_template.html`: figuras de desempenho e relatório offline.
 - `receive_data_log.py`: gravação; `input_hiamp.py`: integração g.tec preservada.
 - `data.py`: leitura e janelas comuns; `check_data.py`: relatório.
 - `decoder_calibration.py`: treino/CV; `online_inference.py`: inferência.
@@ -176,3 +183,23 @@ As versões verificadas em Python 3.12 estão em `requirements-lock.txt`, aplica
 como restrição pelo `requirements.txt`. Valide também SDK, drivers e sistema
 operacional da estação antes da coleta. g.HIamp, renderização Unity e operação
 com participantes precisam de validação na estação real antes de uma sessão.
+
+### ANT Neuro eego mylab / recepção externa
+
+Na preparação, selecione **ANT Neuro · eego mylab** e use **Descobrir streams LSL**.
+O perfil começa em **500 Hz / 64 canais**; ambos são editáveis e a descoberta
+preenche os valores anunciados pelo transmissor. Não existe suposição de uma
+frequência fixa do equipamento. O Python confere a configuração para evitar
+processar um sinal de 512 Hz como se fosse 500 Hz; não há reamostragem automática.
+
+Em **Canais a gravar**, deixe vazio para todos ou informe índices (base 1) ou nomes
+exatos separados por vírgula. Isso seleciona os canais na recepção/gravação;
+`select_channels` continua sendo a seleção posterior para o classificador.
+Os valores recebidos em V/mV são convertidos para µV de forma consistente na
+gravação e na inferência. Confira a unidade do transmissor; é possível sobrescrever
+metadados ausentes/incorretos na tela inicial.
+
+O nome exato não foi recuperado de outra conversa. Ele pode ser descoberto pela
+interface ou preenchido em `eego.signal_name`. Sem nome, somente um EEG disponível
+pode ser escolhido automaticamente; streams ambíguos exigem seleção explícita.
+O Python recebe o stream existente; não instala o SDK nem altera a taxa do amplificador.

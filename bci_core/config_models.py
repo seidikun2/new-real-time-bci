@@ -27,6 +27,7 @@ class LSLConfig:
 @dataclass
 class RuntimeConfig:
     simulate_signal: bool
+    source: Optional[str] = None
 
 
 @dataclass
@@ -179,7 +180,7 @@ def load_config(path: str = "config.yaml") -> AppConfig:
     )
     if cmap.get(protocol.block_end_code) != protocol.block_end_label:
         raise ValueError("Código/label BLOCK_END inconsistente.")
-    return AppConfig(
+    cfg = AppConfig(
         experiment=exp, lsl=lsl, runtime=RuntimeConfig(**raw.get("runtime", {"simulate_signal": True})), protocol=protocol,
         sim_signal=SimSignalConfig(fs, values["n_channels"], raw.get("sim_chunk", 10), raw.get("sim_noise_std", 0.8)),
         sim_burst=SimBurstConfig(raw.get("sim_burst_freq_hz", 10.0), raw.get("sim_burst_amp", 1.5), values["trial_duration_s"], raw.get("sim_taper_frac", 0.2)),
@@ -189,9 +190,17 @@ def load_config(path: str = "config.yaml") -> AppConfig:
         **values, _raw_config=raw,
     )
 
+    if cfg.runtime.source:
+        from .acquisition import set_source
+        set_source(cfg, cfg.runtime.source)
+    return cfg
+
 
 def expected_signal_channels(cfg):
-    if cfg.runtime.simulate_signal:
+    from .acquisition import source_name
+    if source_name(cfg) in {'eego', 'lsl'}:
+        return cfg.n_channels
+    if source_name(cfg) == 'simulator':
         return cfg.sim_signal.channels
     from .input_hiamp import get_hiamp_acquisition_channels, get_output_indices
     return len(get_output_indices(cfg, get_hiamp_acquisition_channels(cfg)))

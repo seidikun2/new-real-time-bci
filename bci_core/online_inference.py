@@ -3,7 +3,7 @@
 
 import os, csv, json, time, threading, pickle, datetime as dt
 from collections import deque
-from typing import List, Optional, Dict, Any
+from typing import Optional, Dict, Any
 
 import numpy as np
 from scipy import signal
@@ -12,8 +12,9 @@ from pyriemann.tangentspace import tangent_space
 from pylsl import StreamInfo, StreamOutlet, local_clock
 
 from .config_models import AppConfig
+from .acquisition import stream_layout
 from .receive_data_log import resolve_signal, make_log_dir
-from .data import select_channel_indices as select_channels, lsl_channel_names
+from .data import select_channel_indices as select_channels
 from .representation_feedback import transform_online_representation
 from .feedback_contract import SIGNAL_CHANNELS, classifier_probabilities, signal_vector
 
@@ -173,7 +174,8 @@ def run_realtime_decoder(cfg: AppConfig, mode: str = "online", model_prefix: Opt
     fs   = float(info.nominal_srate())
     if fs <= 0:
         raise RuntimeError("Fs nominal inválida no stream LSL.")
-    ch_all = lsl_channel_names(info)
+    source_indices, source_scales, stream_meta = stream_layout(cfg, info)
+    ch_all = stream_meta['recorded_channels']
     log(f"Fs stream={fs:.2f} Hz | canais={ch_all}")
 
     train_ch_names = meta["channels_selected"]
@@ -233,7 +235,7 @@ def run_realtime_decoder(cfg: AppConfig, mode: str = "online", model_prefix: Opt
             if not ts:
                 continue
 
-            X = np.asarray(data, dtype=float)
+            X = np.asarray(data, dtype=float)[:, source_indices] * source_scales
             if X.ndim != 2 or X.shape[1] <= max(sel_idx):
                 continue
             if not np.isfinite(X).all():
