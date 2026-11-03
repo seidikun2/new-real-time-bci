@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 from queue import Queue, Empty
 
@@ -217,10 +218,13 @@ def run_block(cfg, mode='train', model_ref=None, block_index=0, operator=None):
                 dashboard.kill()
                 dashboard.wait()
         metadata = {'complete': complete, 'reason': reason, 'active_model': model_ref,
+                    'requested_at': recorder.requested_at, 'started_at': recorder.started_at,
+                    'ended_at': recorder.ended_at, 'finished_at': datetime.now().astimezone().isoformat(timespec='milliseconds'),
+                    'mode': mode,
                     'samples': recorder.samples, 'stream': recorder.stream_metadata, 'config': {**cfg._raw_config, 'experiment': asdict(cfg.experiment)},
                     'effective_config': {key: value for key, value in asdict(cfg).items() if key != '_raw_config'},
                     'schedule': [event.__dict__ for event in events], 'block_index': block_index}
-        recorder.signal_path.with_suffix('.json').write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding='utf-8')
+        recorder.save_metadata(metadata)
     return {'complete': complete, 'reason': reason, 'markers_file': str(recorder.marker_path.resolve()),
             'signal_file': str(recorder.signal_path.resolve())}
 

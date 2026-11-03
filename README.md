@@ -92,6 +92,12 @@ locais confiáveis, pois os artefatos usam pickle.
 ## Qualidade em todos os blocos
 
 Cada bloco gera um `report.html`, `overview.png`, `quality.json` e `channels.csv`.
+O cabeçalho identifica o **tipo de bloco, sujeito/sessão e início/fim da coleta**,
+com data, hora e fuso da estação. O estado **Concluído** ou **INTERROMPIDO** fica
+separado da qualidade do sinal. Interrupções mostram o motivo e indicam dados
+parciais, inclusive quando nenhum EEG foi recebido. Reabrir o relatório mantém
+a identificação original; registros antigos sem informação de conclusão são
+marcados como **Conclusão não registrada**.
 Depois do treino, o relatório mostra o **mapa PCA do próprio bloco** e uma
 **matriz de confusão visual**, com contagem e porcentagem por classe. A tabela
 de canais fica abaixo dos gráficos e dos pontos de atenção.

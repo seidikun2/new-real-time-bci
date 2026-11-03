@@ -13,7 +13,7 @@ from scipy import signal
 
 from .config_models import expected_signal_channels
 from .acquisition import source_name, recording_config
-from .report import write_report
+from .report import collection_info, write_report
 from .data import read_signal_csv, read_markers_csv
 
 
@@ -145,14 +145,18 @@ def run_check_data(cfg, mode='train', markers_file=None, signal_file=None, save_
     tm, labels = read_markers_csv(markers_file, cfg.codes.code_map)
     folder = Path(signal_file).parent / '_qc' / Path(signal_file).stem.rsplit('_signal_', 1)[-1]
     folder.mkdir(parents=True, exist_ok=True)
+    collection = collection_info(cfg, signal_file)
     if len(times) < 2:
-        report = {'status': 'error', 'issues': ['EEG vazio ou insuficiente; confira aquisição antes de repetir.'], 'evaluation': evaluation}
+        report = {'status': 'error', 'issues': ['EEG vazio ou insuficiente; confira aquisição antes de repetir.'],
+                  'evaluation': evaluation, 'collection': collection, 'samples': len(times),
+                  'estimated_fs_hz': None, 'channels': [], 'source': source_name(cfg),
+                  'thresholds': cfg._raw_config.get('quality', {}), 'unit': 'uV'}
         (folder / 'quality.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
-        path = folder / 'report.html'
-        path.write_text('<!doctype html><meta charset="utf-8"><h1>Bloco sem EEG suficiente</h1><p>Confira a aquisição. Nenhum modelo foi validado.</p>', encoding='utf-8')
+        path = write_report(cfg, report, evaluation, signal_file, folder)
         return {'report_path': str(path.resolve()), **report}
     report, clean, freq, psd, bad = inspect_quality(times, X, names, tm, labels, cfg)
     report['evaluation'] = evaluation
+    report['collection'] = collection
     (folder / 'quality.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     plt.rcParams.update({'font.size': 9})
     fig, axes = plt.subplots(3, 1, figsize=(13, max(12, len(names)*.34)), layout='constrained')

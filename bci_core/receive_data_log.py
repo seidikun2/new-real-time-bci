@@ -1,7 +1,9 @@
 """Uma gravação por bloco; marcadores usam o mesmo timestamp enviado ao Unity."""
 import csv
+import json
 import threading
 import time
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
@@ -46,10 +48,26 @@ class BlockRecorder:
         self.last_sample_at = None
         self.samples = 0
         self.stream_metadata = None
+        self.requested_at = datetime.now().astimezone().isoformat(timespec='milliseconds')
+        self.started_at = None
+        self.ended_at = None
         self.offset = time.time() - local_clock()
         self.marker_file = self.marker_path.open('x', newline='', encoding='utf-8')
         self.markers = csv.writer(self.marker_file)
         self.markers.writerow(['iso_time', 'lsl_time_s', 'code', 'label', 'local_recv_iso', 'local_recv_s'])
+        self.marker_file.flush()
+        # O registro começa incompleto. Se o processo for encerrado à força,
+        # o próximo relatório ainda consegue identificar a coleta parcial.
+        self.metadata = {'complete': False, 'reason': 'A coleta não chegou ao encerramento normal.',
+                         'requested_at': self.requested_at, 'mode': mode,
+                         'config': {**cfg._raw_config, 'experiment': asdict(cfg.experiment), 'runtime': asdict(cfg.runtime)}}
+        self.save_metadata(self.metadata)
+
+    def save_metadata(self, metadata):
+        path = self.signal_path.with_suffix('.json')
+        temporary = path.with_suffix('.json.tmp')
+        temporary.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding='utf-8')
+        temporary.replace(path)
 
     def marker(self, code, label, timestamp):
         now = time.time()
@@ -62,13 +80,21 @@ class BlockRecorder:
         try:
             info = inlet.info()
             indices, factors, self.stream_metadata = stream_layout(self.cfg, info)
+            self.metadata['stream'] = self.stream_metadata
+            self.save_metadata(self.metadata)
             with self.signal_path.open('x', newline='', encoding='utf-8') as stream:
                 writer = csv.writer(stream)
                 writer.writerow(['iso_time', 'lsl_time_s', 'local_recv_s'] + self.stream_metadata['recorded_channels'])
+                stream.flush()
                 while not stop.is_set():
                     samples, stamps = inlet.pull_chunk(timeout=.1, max_samples=1024)
                     if not stamps:
                         continue
+                    if self.started_at is None:
+                        self.started_at = datetime.fromtimestamp(stamps[0]+self.offset).astimezone().isoformat(timespec='milliseconds')
+                        self.metadata['started_at'] = self.started_at
+                        self.save_metadata(self.metadata)
+                    self.ended_at = datetime.fromtimestamp(stamps[-1]+self.offset).astimezone().isoformat(timespec='milliseconds')
                     now = time.time()
                     for sample, stamp in zip(samples, stamps):
                         writer.writerow([datetime.fromtimestamp(stamp+self.offset).isoformat(), f'{stamp:.9f}', now, *(float(sample[i])*factor for i, factor in zip(indices, factors))])
