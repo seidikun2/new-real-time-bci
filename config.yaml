@@ -54,21 +54,21 @@ protocol:
   # Online da ETAPA 1. PCA é mostrado somente ao experimentador nos dois blocos.
   online_modes_single_target:
     - name          : "target_feedback"
-      label         : "Online target — bloco 1"
+      label         : "Online alvo · bloco 1"
       session_type  : "IM_online_target_PCA"
 
     - name          : "target_no_feedback"
-      label         : "Online target — bloco 2"
+      label         : "Online alvo · bloco 2"
       session_type  : "IM_online_target_sem_feedback"
 
   # Online da ETAPA 2 — mesma sequência da etapa 1.
   online_modes_two_legs:
     - name          : "two_legs_feedback"
-      label         : "Online duas pernas — bloco 1"
+      label         : "Online duas pernas · bloco 1"
       session_type  : "IM_online_duas_pernas_PCA"
 
     - name          : "two_legs_no_feedback"
-      label         : "Online duas pernas — bloco 2"
+      label         : "Online duas pernas · bloco 2"
       session_type  : "IM_online_duas_pernas_sem_feedback"
 
   # 15 tentativas por classe = 45 trials, como os 3 ciclos antigos de 5.
@@ -192,11 +192,11 @@ quality:
 
 # Transmissor ANT Neuro externo: a taxa deve ser configurada também no streamer.
 eego:
-  signal_name: null       # descobrir pela interface; não pressupõe nome/serial
+  signal_name: "EE225-020034-000905_on_DESKTOP-U197OKE"
   signal_type: "EEG"
   fs_hz: 500.0
   n_channels: 29          # quantidade total publicada, incluindo auxiliares se houver
   receive_channels: []   # [] grava todos; exemplo [1, 2, 3] ou nomes (receive_by: name)
   receive_by: "index"
   index_base: 1
-  unit: "auto"           # lê metadados; se ausentes, informe uV, mV ou V
+  unit: "auto"           # metadados quando disponíveis; caso contrário, preserva escala original

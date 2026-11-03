@@ -21,7 +21,8 @@ Foi inspecionado o código público do conector
   em qualquer amplificador; podem existir entradas auxiliares.
 - Esse conector nomeia o EEG como `eegoSports <serial>`, tipo `EEG`, e os canais como
   `Ch0`, `Ch1`, etc. Outros transmissores/versões podem usar nomes diferentes.
-  Não foi presumido o nome/serial da estação do laboratório.
+  O perfil desta estação usa o nome informado pelo experimentador:
+  `EE225-020034-000905_on_DESKTOP-U197OKE`.
 
 Portanto, a seleção para **transmissão** é suportada pela API de máscaras do SDK,
 mas precisa estar disponível/configurada no transmissor usado pelo laboratório.
@@ -31,28 +32,39 @@ ainda requer teste no laboratório; a verificação acima é de código público
 
 ## Operação
 
-1. No computador conectado ao eego, inicie seu transmissor LSL e configure 500 Hz
-   (ou outra taxa suportada). Não confunda frequência programável com taxa variável
-   durante um bloco: filtros e modelos exigem uma taxa estável.
+1. Inicie o transmissor LSL do eego e o Unity.
 2. No VS Code, F5 → **BCI: conduzir experimento**. Escolha **ANT Neuro · eego mylab**.
-3. Clique **Descobrir streams LSL**. Escolha o EEG correto; nome, taxa e quantidade
-   de canais são preenchidos a partir dos metadados do transmissor.
-4. Confira o número **total publicado**, incluindo auxiliares. Se necessário,
-   selecione apenas os canais da touca no campo de gravação.
-5. Deixe a seleção vazia para todos, ou use, por exemplo, `1, 2, 3, 4` (base 1)
-   ou `Fz, Cz, Pz`. Com os rótulos do conector público, o índice `1` corresponde
-   ao primeiro canal **Ch0**; um nome literal `Ch0` também é aceito.
-6. Confira as unidades. `auto` lê os metadados; `V`, `mV` e `uV` permitem uma
-   escolha explícita. O valor gravado/processado é normalizado para µV. Verifique
-   a escala real do transmissor, pois a descrição LSL por si só não prova a unidade
-   entregue pelo SDK. Sem unidade reconhecida, o programa pede configuração.
-7. Use um modelo treinado com a mesma taxa e os mesmos canais. A inferência
-   mantém a ordem dos canais do modelo; não adapta um modelo de 256 Hz a 500 Hz.
+3. O nome LSL da estação já vem preenchido. Na operação normal, basta sujeito,
+   sessão e etapa. **Parâmetros** permite mudar nome, taxa inicial, quantidade
+   esperada e canais a gravar; não há campo de unidade.
+4. Clique **Iniciar bloco**. A conexão adota a frequência e a quantidade de canais
+   efetivamente anunciadas pelo transmissor. Uma diferença em relação ao perfil
+   inicial fica como observação, sem impedir o registro. Não há reamostragem.
+5. A mesma janela acompanha coleta, análise automática e resultados. O navegador
+   só abre se você clicar em **Abrir relatório**. Não há confirmações de QC ou treino.
+6. Antes do online, selecione um modelo na janela principal. Ele precisa usar a
+   mesma taxa, canais e escala do sinal; nenhum treino novo troca o modelo ativo.
 
-A seleção e os metadados observados ficam no JSON ao lado do CSV: nome, source ID,
-frequência, canais originais/gravados, unidades e fatores de conversão.
-O relatório e o retreino recuperam a taxa desse bloco, inclusive quando a sessão
-atual usa outro perfil de aquisição.
+A seleção de canais é opcional: vazio recebe todos. Use índices base 1 (`1, 2, 3`)
+ou nomes literais (`Fz, Cz, Pz` ou `Ch0, Ch1`). No conector público, índice 1 é Ch0.
+Auxiliares publicados pelo transmissor também entram na quantidade total; eles
+podem ser excluídos dessa seleção, sem reconfigurar o amplificador.
+
+Unidades reconhecidas nos metadados são normalizadas para µV. Na ausência de uma
+unidade reconhecida, os valores nativos são preservados e essa condição aparece
+no relatório, com os limites absolutos de amplitude desabilitados. A unidade nunca
+é adivinhada pela amplitude nem solicitada ao operador. Um eventual override no
+YAML continua disponível para manutenção do perfil, após conferir o transmissor.
+
+Se a frequência nominal não for declarada, vale o valor inicial (500 Hz por padrão)
+e o relatório informa essa suposição. Filtros e modelos exigem uma taxa estável
+durante o bloco. O check por timestamps ajuda a detectar discrepâncias.
+
+A ausência de `source ID` no transmissor gera um aviso da biblioteca sobre
+recuperação automática. A leitura usa a conexão atual sem exigir esse ID; uma
+queda real do stream interrompe o bloco e salva a gravação parcial. Dentro de um
+bloco, logger e decoder permanecem no mesmo publicador; ao começar outro, a
+identidade efêmera é renovada. Os metadados observados ficam no JSON do sinal.
 
 ## Configuração por arquivo
 
@@ -62,14 +74,14 @@ runtime:
   simulate_signal: false
 
 eego:
-  signal_name: null          # descoberta; ou nome exato confirmado no laboratório
+  signal_name: "EE225-020034-000905_on_DESKTOP-U197OKE"
   signal_type: EEG
   fs_hz: 500.0
-  n_channels: 64             # número total publicado pelo transmissor
+  n_channels: 64             # perfil inicial; usa a quantidade anunciada
   receive_channels: []       # todos; ou uma lista de índices/nomes
   receive_by: index          # index | name
   index_base: 1
-  unit: auto                # auto | V | mV | uV
+  unit: auto                # automático; ausente = preserva escala original
 ```
 
 A interface também oferece **Outro stream LSL**, usando a mesma camada flexível.
@@ -79,7 +91,7 @@ gravação; seus índices se referem aos canais efetivamente gravados.
 ## Evidência de teste
 
 Foram verificados os perfis 64 canais/500 Hz e 32 canais/1000 Hz, seleção por nome
-e índice, preservação de ordem e rejeição de metadados incompatíveis. Um teste
+e índice, preservação de ordem, adoção dos metadados reais e gravação sem unidade informada. Um teste
 integrado com transmissor LSL sintético de 64 canais/500 Hz exercitou gravação de
 um subconjunto, conversão V→µV, treino, inferência e relatório. Isso não comprova
 conexão ao eego físico nem a montagem específica de eletrodos do laboratório.

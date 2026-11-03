@@ -171,10 +171,10 @@ def run_realtime_decoder(cfg: AppConfig, mode: str = "online", model_prefix: Opt
         raise ValueError("Modelo antigo classifica em PCA. Retreine os dados para usar o espaço completo.")
     inlet = resolve_signal(cfg, stop_event)
     info = inlet.info()
-    fs   = float(info.nominal_srate())
-    if fs <= 0:
-        raise RuntimeError("Fs nominal inválida no stream LSL.")
     source_indices, source_scales, stream_meta = stream_layout(cfg, info)
+    fs = stream_meta['fs_hz']
+    if meta.get('signal_unit', 'uV') != stream_meta['unit']:
+        raise ValueError('O modelo e o stream usam escalas diferentes. Retreine os dados recebidos nesta sessão.')
     ch_all = stream_meta['recorded_channels']
     log(f"Fs stream={fs:.2f} Hz | canais={ch_all}")
 

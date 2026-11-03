@@ -118,6 +118,7 @@ def run_calibration(cfg, markers_file, signal_file):
         'protocol_stage': cfg.protocol.stage, 'training_mode': cfg.protocol.training_mode,
         'online_target': cfg.protocol.online_target, 'session_type': source_config.get('experiment', {}).get('session_type', cfg.experiment.session_type),
         'channels_selected': selected, 'channel_indices': indices, 'fs_hz': fs,
+        'signal_unit': getattr(cfg, '_recorded_unit', 'uV'),
         'filter': {'band_hz': cfg.bp_band_hz, 'order': cfg.bp_order},
         'window_s': cfg.window_s, 'step_s': cfg.step_s, 'trial_duration_s': cfg.trial_duration_s,
         'classes_map': label_map, 'classes': details, 'cv': cv,

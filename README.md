@@ -20,23 +20,32 @@ Preparação, feita uma vez na estação do laboratório:
 
 Em cada sessão:
 
-1. Abra a pasta do projeto e selecione o interpretador preparado.
-2. Em **Run and Debug**, selecione **BCI: conduzir experimento** e pressione **F5**.
-3. Na janela inicial, confira sujeito, sessão, etapa, perna-alvo, fase inicial e
-   aquisição simulada, g.HIamp, ANT Neuro eego mylab ou outro stream LSL. Essas escolhas valem para a execução atual;
-   os padrões continuam no YAML. Não há perguntas no prompt.
-4. Confirme cada bloco. A janela de acompanhamento mostra a gravação e permite
-   **Interromper bloco e salvar**. Prefira esse botão ao encerramento forçado do VS Code.
-5. Ao fim de cada bloco, inspecione o relatório aberto no navegador. Confirme o
-   treino quando os dados forem utilizáveis, confira a acurácia e escolha
-   repetir, seguir ou encerrar. Não é preciso interpretar o terminal para conduzir.
-6. Antes do online, escolha explicitamente um modelo ou um bloco de dados para
-   retreinar. Também é possível abrir `model_meta.json` de outra sessão.
-   O programa mostra os dados de origem e pede confirmação da escolha.
+1. Abra o projeto no VS Code, selecione **BCI: conduzir experimento** e pressione F5.
+2. Na única janela da aplicação, informe sujeito e sessão e escolha etapa, perna-alvo
+   e aquisição. Os detalhes ficam no botão **Parâmetros**, quando necessário.
+3. Para ANT Neuro, o nome `EE225-020034-000905_on_DESKTOP-U197OKE` já está configurado.
+   Frequência e quantidade de canais são lidas do stream; 500 Hz/64 canais são apenas
+   o perfil inicial. Não é necessário escolher unidade.
+4. Clique **Iniciar bloco**. A mesma janela acompanha conexão, amostras gravadas,
+   fase/cue atual e, no online, o ponto PCA do experimentador. **Interromper e salvar**
+   encerra o bloco preservando os dados.
+5. Ao terminar, a análise e o treino são feitos em background. O resultado, o mapa
+   PCA e a matriz de confusão aparecem na mesma janela, sem abrir navegador nem
+   pedir confirmação de cada check. Escolha **Próximo bloco**, **Repetir bloco** ou
+   **Encerrar sessão**. **Abrir relatório** é opcional.
+6. Antes do online, selecione explicitamente o modelo na própria janela. Também
+   é possível escolher dados para retreinar ou abrir um modelo de outra pasta.
+   Novos treinos não substituem o modelo ativo; **Trocar modelo** fica disponível
+   ao revisar um bloco online.
 
-Se um relatório não abrir automaticamente, o caminho fica no diálogo e na pasta
-`_qc`. Em máquinas Linux, a operação gráfica requer uma sessão de desktop e Tk;
-o teste de simulação abaixo funciona sem desktop.
+Não há sequência de pop-ups para confirmação, qualidade ou resultados. Janelas
+adicionais ficam reservadas a parâmetros e ao seletor de arquivo solicitado pelo
+operador. Avisos e falhas aparecem na área de mensagens da janela principal.
+Os relatórios completos continuam na pasta `_qc` e podem ser abertos quando desejado.
+
+Em Linux, a operação gráfica precisa de desktop e Tk. O teste de simulação abaixo
+funciona sem desktop. Na estação do laboratório, inicie o transmissor e o Unity
+antes de começar a coleta.
 
 ## Fluxo experimental preservado
 
@@ -53,11 +62,11 @@ o teste de simulação abaixo funciona sem desktop.
   pausa 2 s. Os tempos e a quantidade estão em `protocol`; a tentativa continua
   em `trial_duration_s`.
 - Há treino e estimativa de acurácia após **cada bloco completo**, inclusive online.
-  O operador pode recusar o treino se a inspeção revelar dados inadequados.
+  Alertas de qualidade ficam visíveis no resultado e no relatório, sem diálogos bloqueantes.
   Blocos interrompidos são preservados e diagnosticados, mas não treinados.
 
 Os nomes de sessão `_PCA` e `_sem_feedback` foram mantidos para organização dos
-arquivos existentes. Nesta versão o PCA fica sempre com o experimentador;
+arquivos existentes. Nesta versão o PCA fica sempre na janela do experimentador;
 os dois blocos online usam o modelo escolhido e o mesmo contrato de controle.
 A apresentação do avatar continua no Unity.
 
@@ -192,20 +201,26 @@ com participantes precisam de validação na estação real antes de uma sessão
 
 ### ANT Neuro eego mylab / recepção externa
 
-Na preparação, selecione **ANT Neuro · eego mylab** e use **Descobrir streams LSL**.
-O perfil começa em **500 Hz / 64 canais**; ambos são editáveis e a descoberta
-preenche os valores anunciados pelo transmissor. Não existe suposição de uma
-frequência fixa do equipamento. O Python confere a configuração para evitar
-processar um sinal de 512 Hz como se fosse 500 Hz; não há reamostragem automática.
+Selecione **ANT Neuro · eego mylab** na preparação. O nome LSL da estação já está
+preenchido no perfil. Para outro transmissor, use **Parâmetros → Nome LSL** ou
+**Buscar streams**. A taxa e a quantidade anunciadas pelo stream são adotadas
+automaticamente na gravação e no processamento, sem reamostragem. Caso o transmissor
+não declare frequência nominal, usa-se a frequência inicial configurada, com uma
+observação no relatório; o estimador por timestamps continua no check do bloco.
 
-Em **Canais a gravar**, deixe vazio para todos ou informe índices (base 1) ou nomes
-exatos separados por vírgula. Isso seleciona os canais na recepção/gravação;
+Em **Parâmetros → Canais a gravar**, deixe vazio para todos ou selecione índices
+(base 1) ou nomes exatos separados por vírgula. Essa seleção acontece na recepção;
 `select_channels` continua sendo a seleção posterior para o classificador.
-Os valores recebidos em V/mV são convertidos para µV de forma consistente na
-gravação e na inferência. Confira a unidade do transmissor; é possível sobrescrever
-metadados ausentes/incorretos na tela inicial.
 
-O nome exato não foi recuperado de outra conversa. Ele pode ser descoberto pela
-interface ou preenchido em `eego.signal_name`. Sem nome, somente um EEG disponível
-pode ser escolhido automaticamente; streams ambíguos exigem seleção explícita.
-O Python recebe o stream existente; não instala o SDK nem altera a taxa do amplificador.
+A unidade não é uma entrada da interface. Quando todos os canais selecionados têm
+unidade reconhecida nos metadados, V/mV são convertidos para µV de forma consistente
+na gravação e na inferência. Quando a unidade não é informada, os valores são
+preservados na escala original e o relatório registra essa condição, sem aplicar
+limites absolutos que dependam de µV. Não há inferência de unidade pela amplitude.
+Modelos novos registram essa escala para evitar misturar modelos e sinais incompatíveis.
+
+O aviso LSL de ausência de `source ID` diz respeito à reconexão após falha do
+transmissor. Ele não exige preenchimento manual nem impede a leitura: a conexão
+sem ID é usada sem recuperação automática, fixada ao mesmo publicador dentro do
+bloco. Uma interrupção real da transmissão continua sendo detectada e os dados
+parciais são preservados. A identidade efêmera é renovada ao iniciar outro bloco.

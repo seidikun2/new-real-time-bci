@@ -45,10 +45,12 @@ class MarkerPublisher:
         recorder.marker(code, label, stamp)
 
 
-def run_schedule(events, publisher, recorder, wait):
+def run_schedule(events, publisher, recorder, wait, on_event=None):
     """wait(duration) acompanha parada/erros; cada intervalo começa no envio real."""
     for event in events:
         publisher.send(event.label, recorder)
+        if on_event:
+            on_event(event.label)
         if not wait(event.duration):
             return False
     return True

@@ -11,8 +11,11 @@ from datetime import datetime
 from pathlib import Path
 from queue import Queue, Empty
 
+import matplotlib
+matplotlib.use('Agg')  # Relatórios são gerados em background, sem janelas Matplotlib.
+
 from bci_core.config_models import load_config
-from bci_core.acquisition import source_name, recording_config
+from bci_core.acquisition import source_name, recording_config, set_source
 from bci_core.protocol import MarkerPublisher, build_schedule, run_schedule
 from bci_core.receive_data_log import BlockRecorder
 from bci_core.realtime_signal_transmit import run_transmission as simulate_signal
@@ -37,13 +40,13 @@ def with_session(cfg, session_type):
     return result
 
 
-def validate_model(cfg, reference):
+def validate_model(cfg, reference, check_rate=True):
     meta = read_model_meta(reference)
     if meta.get('classifier_input') != 'tangent_space':
         raise ValueError('Modelo antigo usa PCA para classificação. Selecione os CSVs e retreine.')
     if meta.get('protocol_stage') != cfg.protocol.stage or (cfg.protocol.stage == 'single_target' and meta.get('online_target') != cfg.protocol.online_target):
         raise ValueError('Modelo de outra etapa/perna-alvo. Selecione ou retreine um modelo compatível.')
-    if abs(meta['fs_hz']-cfg.fs_hz) > .01:
+    if check_rate and abs(meta['fs_hz']-cfg.fs_hz) > .01:
         raise ValueError('Frequência do modelo diferente da aquisição configurada.')
     reference_mean, pca, classifier = load_artifacts(reference)
     channels = len(meta['channels_selected'])
@@ -70,44 +73,39 @@ def list_models(cfg):
 
 
 def choose_model(cfg, operator):
-    while True:
-        action = operator.choose('Escolher dados/modelo para todos os blocos online', [
-            ('Usar modelo já treinado (seleção manual)', 'model'),
-            ('Escolher um bloco de dados e retreinar', 'data'),
-            ('Abrir modelo de outra sessão/pasta', 'file')])
-        if action is None:
+    while not operator.closing:
+        rows = [(label, ('model', reference)) for label, reference in list_models(cfg)]
+        rows += [('Escolher dados de outro bloco e retreinar', ('data', None)),
+                 ('Abrir modelo de outra pasta', ('file', None))]
+        selected = operator.choose('Modelo para os blocos online', rows)
+        if selected is None:
             return None
+        action, reference = selected
         try:
-            if action == 'model':
-                rows = list_models(cfg)
-                if not rows:
-                    operator.notify('Nenhum modelo compatível. Escolha dados para retreinar.')
+            if action == 'file':
+                filename = operator.select_file('Escolha model_meta.json', str(session_root(cfg)))
+                if not filename:
                     continue
-                reference = operator.choose('Selecione explicitamente o modelo online', rows)
-            elif action == 'file':
-                path = operator.select_file('Escolha model_meta.json (somente modelos locais confiáveis)', str(session_root(cfg)))
-                reference = str(Path(path).parent) if path else None
-            else:
+                reference = str(Path(filename).parent)
+            elif action == 'data':
                 pairs = []
                 for folder in session_root(cfg).rglob('*'):
                     if folder.is_dir() and folder.name in {'train', 'online'}:
                         pairs.extend(find_marker_signal_pairs(folder))
-                pair = operator.choose('Escolha o bloco de dados para retreinar', [(Path(s).name, (m, s)) for m, s in pairs])
+                pair = operator.choose('Dados para retreinar', [(Path(s).name, (m, s)) for m, s in pairs])
                 if pair is None:
                     continue
-                qc = run_check_data(cfg, markers_file=pair[0], signal_file=pair[1])
-                operator.show_report(qc['report_path'])
-                if not operator.confirm('Confira o relatório aberto. Deseja treinar com estes dados? Nenhum canal será removido automaticamente.'):
-                    continue
-                result = run_calibration(cfg, *pair)
-                run_check_data(cfg, markers_file=pair[0], signal_file=pair[1], evaluation=result['meta'])
+                result = operator.run_job('Treinando os dados escolhidos', run_calibration, cfg, *pair)
                 reference = result['model_dir']
-            if reference is None:
-                continue
-            meta = validate_model(cfg, reference)
-            return reference if operator.confirm(f"Usar este modelo durante o online?\n{reference}\n\nDados: {meta['signal_file']}\nDimensões: {meta['feature_dimensions']}\nCV: {meta['cv'].get('acc_mean')}\nO treino de novos blocos não trocará este modelo.") else None
+            validate_model(cfg, reference, check_rate=False)
+            selected_meta = read_model_meta(reference)
+            selected_accuracy = selected_meta.get('cv', {}).get('acc_mean')
+            score = f' · CV {selected_accuracy:.1%}' if selected_accuracy is not None else ''
+            operator.notify(f"Modelo online: {selected_meta.get('session_type', 'selecionado')}{score}")
+            return reference
         except Exception as exc:
-            operator.notify(f'Não foi possível selecionar/treinar:\n{exc}')
+            operator.notify(f'Não foi possível usar esse modelo: {exc}')
+    return None
 
 
 def start_dashboard(cfg, model_ref):
@@ -120,16 +118,25 @@ def start_dashboard(cfg, model_ref):
         '--pca-map-json', meta['pca_map_json'], '--plot-hz', str(cfg._raw_config.get('debug_plot', {}).get('plot_hz', 5.))], cwd=PROJECT)
 
 
+def prepare_streams(cfg, mode):
+    recorder = BlockRecorder(cfg, mode)
+    try:
+        return recorder, MarkerPublisher(cfg)
+    except Exception:
+        recorder.close()
+        raise
+
+
 def run_block(cfg, mode='train', model_ref=None, block_index=0, operator=None):
     """Não inicia cues até EEG, logger e (no online) decoder/controle funcionarem."""
     events = build_schedule(cfg, block_index)
-    if model_ref:
-        validate_model(cfg, model_ref)
+    # Identidade efêmera vale apenas dentro de um bloco; o publicador pode reiniciar.
+    cfg.__dict__.pop('_signal_uid', None)
+    cfg.__dict__.pop('_signal_source_id', None)
     stop = threading.Event()
     errors = Queue()
     threads = []
-    recorder = BlockRecorder(cfg, mode)
-    publisher = MarkerPublisher(cfg)
+    recorder, publisher = operator.run_job('Preparando aquisição', prepare_streams, cfg, mode) if operator else prepare_streams(cfg, mode)
     complete, reason = False, None
     dashboard = None
     p = cfg._raw_config['protocol']
@@ -147,7 +154,9 @@ def run_block(cfg, mode='train', model_ref=None, block_index=0, operator=None):
     if operator:
         operator.begin_block()
     def check():
-        if operator and not operator.poll_block(f'{cfg.experiment.session_type}: {recorder.samples} amostras gravadas'):
+        stream = recorder.stream_metadata
+        description = f" · {stream['fs_hz']:g} Hz · {len(stream['recorded_channels'])} canais" if stream else ''
+        if operator and not operator.poll_block(f'{recorder.samples} amostras gravadas{description}'):
             raise KeyboardInterrupt('Interrompido pelo experimentador.')
         try:
             raise errors.get_nowait()
@@ -178,6 +187,7 @@ def run_block(cfg, mode='train', model_ref=None, block_index=0, operator=None):
         start(recorder.record, stop)
         ready(recorder.ready, 'Gravação EEG')
         if model_ref:
+            validate_model(cfg, model_ref)
             decoder_ready = threading.Event()
             start(run_realtime_decoder, cfg, mode, model_ref, stop, 'none', ready_event=decoder_ready)
             ready(decoder_ready, 'Decoder')
@@ -185,10 +195,11 @@ def run_block(cfg, mode='train', model_ref=None, block_index=0, operator=None):
                 control_ready = threading.Event()
                 start(run_intention_controller, cfg, mode, stop, 'none', ready_event=control_ready)
                 ready(control_ready, 'Controle Unity')
-            dashboard = start_dashboard(cfg, model_ref)
+            if operator is None:
+                dashboard = start_dashboard(cfg, model_ref)
         # Descoberta LSL do consumidor de marcadores e assentamento da aquisição.
         wait(1.)
-        complete = run_schedule(events, publisher, recorder, wait)
+        complete = run_schedule(events, publisher, recorder, wait, getattr(operator, 'set_event', None))
         wait(.2)
         reason = 'completed'
     except (Exception, KeyboardInterrupt) as exc:
@@ -230,28 +241,21 @@ def run_block(cfg, mode='train', model_ref=None, block_index=0, operator=None):
 
 
 def analyze_block(cfg, block, operator=None):
+    """Análise automática e não bloqueante para a condução; nenhum popup."""
     cfg = recording_config(cfg, block['signal_file'])
     pair = (block['markers_file'], block['signal_file'])
-    qc = run_check_data(cfg, markers_file=pair[0], signal_file=pair[1])
-    if operator:
-        operator.show_report(qc['report_path'])
-    evaluation = {}
     if block['complete']:
-        proceed = not operator or operator.confirm('O relatório de qualidade foi aberto. Confira sinal, canais e alertas.\nTreinar e estimar acurácia deste bloco? Os dados não serão limpos automaticamente.')
-        if proceed:
-            try:
-                evaluation = run_calibration(cfg, *pair)['meta']
-            except Exception as exc:
-                evaluation = {'error': str(exc)}
-        else:
-            evaluation = {'error': 'Treino recusado pelo operador após inspeção de qualidade.'}
+        try:
+            evaluation = run_calibration(cfg, *pair)['meta']
+        except Exception as exc:
+            evaluation = {'error': str(exc)}
     else:
         evaluation = {'error': f"Bloco incompleto; não usado no treino. {block['reason']}"}
+    threshold = cfg.protocol.min_cv_accuracy
+    accuracy = evaluation.get('cv', {}).get('acc_mean')
+    if threshold is not None and (accuracy is None or accuracy < threshold):
+        evaluation.setdefault('warnings', []).append(f'Acurácia abaixo do critério {threshold}: {accuracy}.')
     qc = run_check_data(cfg, markers_file=pair[0], signal_file=pair[1], evaluation=evaluation)
-    if operator:
-        operator.show_report(qc['report_path'])
-        cv = evaluation.get('cv', {})
-        operator.notify(f"Relatório salvo em:\n{qc['report_path']}\n\nCV por janela: {cv.get('acc_mean')}\nVoto por tentativa: {cv.get('trial_accuracy')}\n{evaluation.get('error', cv.get('reason', ''))}")
     return qc, evaluation
 
 
@@ -265,13 +269,13 @@ def run_experiment(cfg, operator):
     phase = p.start_phase if p.start_phase != 'auto' else 'execution'
     if phase not in {'execution', 'imagery', 'online'}:
         raise ValueError('start_phase deve ser auto, execution, imagery ou online.')
-    operator.notify(f'Sujeito: {cfg.experiment.subject_id} | sessão: {cfg.experiment.session_id}\nEtapa: {p.stage} | alvo: {p.online_target}\nAquisição: {source_name(cfg)}\n\nAbra o Unity antes de iniciar os blocos. O Python enviará os marcadores e controlará os tempos.')
     blocks = []
     if phase == 'execution':
         blocks.append(('Execução motora', p.motor_session_type, 'train'))
     if phase in {'execution', 'imagery'}:
         blocks.append(('Imagética motora', p.imagery_session_type, 'train'))
     blocks += [(m['label'], m['session_type'], 'online') for m in online_modes(cfg)]
+    operator.set_protocol([label for label, _, _ in blocks])
     model_ref = None
     for label, session_type, mode in blocks:
         if mode == 'online' and model_ref is None:
@@ -279,28 +283,31 @@ def run_experiment(cfg, operator):
             if model_ref is None:
                 return
         index = 0
-        while True:
-            if not operator.confirm(f'Iniciar {label}?\n\nUnity conectado aos marcadores LSL?\nUse o botão Interromper bloco para encerrar salvando os dados.\nOs resultados serão salvos em {cfg.experiment.log_root}.'):
-                return
+        while not operator.closing:
             block_cfg = with_session(cfg, session_type)
+            if not operator.prepare_block(block_cfg, label, model_ref if mode == 'online' else None):
+                return
             block = run_block(block_cfg, mode, model_ref if mode == 'online' else None, index, operator)
             try:
-                qc, evaluation = analyze_block(block_cfg, block, operator)
-                threshold = p.min_cv_accuracy
-                acc = evaluation.get('cv', {}).get('acc_mean')
-                if threshold is not None and (acc is None or acc < threshold):
-                    operator.notify(f'Acurácia abaixo do critério {threshold}: {acc}. Considere repetir o bloco.')
+                qc, evaluation = operator.run_job('Analisando o bloco', analyze_block, block_cfg, block)
             except Exception as exc:
-                operator.notify(f'Falha na análise do bloco: {exc}\nCSV preservado: {block["signal_file"]}')
-            action = operator.choose('Bloco encerrado — inspecione o relatório antes de seguir', [
-                ('Repetir este bloco', 'repeat'), ('Seguir para a próxima fase', 'next'), ('Encerrar sessão', 'stop')])
+                qc, evaluation = {'issues': [str(exc)]}, {'error': f'Análise indisponível. CSV preservado: {block["signal_file"]}'}
+            if operator.closing:
+                return
+            action = operator.review_block(label, block, qc, evaluation)
+            if action == 'model' and mode == 'online':
+                model_ref = choose_model(cfg, operator)
+                if model_ref is None:
+                    return
+                index += 1
+                continue
             if action == 'repeat':
                 index += 1
                 continue
             if action != 'next':
                 return
             break
-    operator.notify('Protocolo finalizado. CSVs, modelos e relatórios foram salvos.')
+    operator.finish('Protocolo finalizado. Os dados e relatórios estão salvos.')
 
 
 def main():
@@ -312,8 +319,7 @@ def main():
     cfg = load_config(args.config)
     if args.smoke:
         from tempfile import mkdtemp
-        cfg.runtime.simulate_signal = True
-        cfg.runtime.source = 'simulator'
+        set_source(cfg, 'simulator')
         cfg.experiment.log_root = args.output or mkdtemp(prefix='bci-smoke-')
         cfg.n_channels = cfg.sim_signal.channels = 4
         cfg.trial_duration_s = cfg.sim_burst.dur = .4
@@ -341,8 +347,8 @@ def main():
         if operator.configure(cfg):
             run_experiment(cfg, operator)
     except Exception as exc:
-        operator.notify(f'Experimento interrompido:\n{exc}')
-        raise
+        operator.notify(f'Experimento interrompido: {exc}')
+        operator.finish('Confira a mensagem acima. Os dados já gravados foram preservados.')
     finally:
         operator.close()
 
