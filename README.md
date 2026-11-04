@@ -22,17 +22,22 @@ Em cada sessão:
 
 1. Abra o projeto no VS Code, selecione **BCI: conduzir experimento** e pressione F5.
 2. Na única janela da aplicação, informe sujeito e sessão e escolha etapa, perna-alvo
-   e aquisição. Os detalhes ficam no botão **Parâmetros**, quando necessário.
+   e aquisição. Em **Pasta dos dados**, escolha onde guardar a sessão, fora da pasta
+   do projeto. Os detalhes ficam no botão **Parâmetros**, quando necessário.
 3. Para ANT Neuro, o nome `EE225-020034-000905_on_DESKTOP-U197OKE` já está configurado.
-   Frequência e quantidade de canais são lidas do stream; 500 Hz/64 canais são apenas
-   o perfil inicial. Não é necessário escolher unidade.
+   Frequência e quantidade de canais são lidas do stream; o perfil inicial da estação
+   está em 500 Hz/29 canais e aceita também transmissões com 64 canais. Não é necessário
+   escolher unidade.
 4. Clique **Iniciar bloco**. A mesma janela acompanha conexão, amostras gravadas,
-   fase/cue atual e, no online, o ponto PCA do experimentador. **Interromper e salvar**
-   encerra o bloco preservando os dados.
+   fase/cue atual e um **snapshot dos últimos cinco segundos** do sinal, atualizado
+   a cada segundo. Os canais têm a mesma cor e nomes no eixo vertical; use a rolagem
+   para inspecionar todos os canais. No online, o ponto PCA do experimentador fica
+   em outra aba. **Interromper e salvar** encerra o bloco preservando os dados.
 5. Ao terminar, a análise e o treino são feitos em background. O resultado, o mapa
-   PCA e a matriz de confusão aparecem na mesma janela, sem abrir navegador nem
-   pedir confirmação de cada check. Escolha **Próximo bloco**, **Repetir bloco** ou
-   **Encerrar sessão**. **Abrir relatório** é opcional.
+   PCA, a matriz de confusão e o snapshot aparecem em abas maiores, sem abrir
+   navegador nem pedir confirmação de cada check. Escolha **Próximo bloco**, **Repetir bloco** ou
+   **Encerrar sessão**. O link **Abrir relatório completo** fica visível entre blocos,
+   inclusive na preparação do próximo, e abre o relatório no navegador ao clicar.
 6. Antes do online, selecione explicitamente o modelo na própria janela. Também
    é possível escolher dados para retreinar ou abrir um modelo de outra pasta.
    Novos treinos não substituem o modelo ativo; **Trocar modelo** fica disponível
@@ -42,10 +47,19 @@ Não há sequência de pop-ups para confirmação, qualidade ou resultados. Jane
 adicionais ficam reservadas a parâmetros e ao seletor de arquivo solicitado pelo
 operador. Avisos e falhas aparecem na área de mensagens da janela principal.
 Os relatórios completos continuam na pasta `_qc` e podem ser abertos quando desejado.
+O snapshot usa escala robusta por canal e limita os picos na exibição. A redução
+de pontos preserva mínimos e máximos para facilitar a inspeção; o CSV recebe todas
+as amostras na escala de gravação.
 
 Em Linux, a operação gráfica precisa de desktop e Tk. O teste de simulação abaixo
 funciona sem desktop. Na estação do laboratório, inicie o transmissor e o Unity
 antes de começar a coleta.
+
+Para ensaiar a condução na mesma interface, selecione **BCI: protocolo completo em
+simulação** no VS Code e pressione F5. Execução motora, imagética e os dois blocos
+online funcionam sem Unity nem amplificador. Escolha a etapa na preparação e o
+modelo antes do online, como na coleta real. Os tempos normais do protocolo são
+mantidos; para um teste curto automático das duas etapas, use a validação abaixo.
 
 ## Fluxo experimental preservado
 
@@ -101,6 +115,8 @@ locais confiáveis, pois os artefatos usam pickle.
 ## Qualidade em todos os blocos
 
 Cada bloco gera um `report.html`, `overview.png`, `quality.json` e `channels.csv`.
+Quando há sinal suficiente, `signal_snapshot.npz` guarda os últimos cinco segundos
+para a inspeção na interface, com timestamps e nomes dos canais.
 O cabeçalho identifica o **tipo de bloco, sujeito/sessão e início/fim da coleta**,
 com data, hora e fuso da estação. O estado **Concluído** ou **INTERROMPIDO** fica
 separado da qualidade do sinal. Interrupções mostram o motivo e indicam dados
@@ -113,8 +129,9 @@ de canais fica abaixo dos gráficos e dos pontos de atenção.
 A análise considera todos os canais gravados, inclusive os que não foram
 selecionados para o classificador:
 
-- EEG publicado pelo amplificador (após referência), com marcadores e espectro
-  de potência por canal (Welch).
+- EEG publicado pelo amplificador (após referência), com traços da mesma cor,
+  nomes dos canais no eixo vertical e marcadores. O espectro por canal (Welch)
+  aparece em um mapa de tons de cinza, em dB relativos ao pico de cada canal.
 - Mapa por segundo de amplitudes suspeitas, flatlines, picos robustos e NaN/Inf.
 - Métricas de amplitude, desvio, ruído 50/60 Hz, alta frequência e patamares.
 - Canais idênticos, quantidade de canais, frequência, timestamps fora de ordem,
@@ -159,14 +176,21 @@ não comprova que o Unity recebeu/desenhou cada estímulo: confira sua conexão.
 
 ## Arquivos e manutenção
 
-`Dados/<sujeito>/S<sessão>/<tipo>/train/` guarda a execução/imagética;
-`Dados/<sujeito>/S<sessão>/online/` guarda os blocos online.
+A **Pasta dos dados** escolhida na preparação é a base de todos os arquivos da sessão.
+O padrão é `~/BCI_Dados`, na pasta pessoal, fora do projeto. Para tornar outra pasta
+o padrão das próximas execuções, altere `experiment.log_root` no `config.yaml`.
+O programa valida a permissão de gravação e recusa destinos dentro do projeto,
+inclusive por links simbólicos. Dados existentes não são movidos automaticamente.
+
+`<pasta_dos_dados>/<sujeito>/S<sessão>/<tipo>/train/` guarda a execução/imagética;
+`<pasta_dos_dados>/<sujeito>/S<sessão>/online/` guarda os blocos online.
 Cada par de CSVs compartilha um identificador único. O JSON ao lado do sinal
 registra conclusão/interrupção, configuração efetiva, sequência e modelo ativo.
 `_model/` guarda cada treino e seu mapa; `_qc/` guarda cada relatório.
 
 - `main.py`: fluxo das fases, escolha do modelo e supervisão dos componentes.
-- `operator.py`: janelas de operação; `protocol.py`: sequência/tempos.
+- `operator.py`: janela de operação; `protocol.py`: sequência/tempos.
+- `signal_preview.py`: snapshot ao vivo e após o bloco; `storage.py`: destino dos dados.
 - `acquisition.py`: perfis, descoberta LSL, seleção de canais e unidades.
 - `report.py` e `report_template.html`: figuras de desempenho e relatório offline.
 - `receive_data_log.py`: gravação; `input_hiamp.py`: integração g.tec preservada.
@@ -181,9 +205,14 @@ O PDF em `docs/` é documentação histórica e pode descrever a pipeline anteri
 
 ## Verificação técnica
 
-No VS Code, selecione **BCI: testar pipeline simulada (sem Unity)** e pressione F5.
-Esse teste coleta dois blocos curtos, treina, gera relatórios, publica feedback e
-executa o controle, sem hardware nem desktop. As saídas vão a uma pasta temporária.
+No VS Code, selecione **BCI: validar pipeline completa (8 blocos simulados)** e pressione F5.
+Esse teste coleta execução, imagética e os dois blocos online em **cada uma das duas
+etapas**, com tempos curtos, treino/CV e relatório após cada bloco. Também publica
+feedback e executa inferência e controle online, sem Unity, hardware nem desktop.
+Somente nesse diagnóstico automático, o modelo de imagética da etapa é escolhido
+para os dois online e permanece fixo. Na interface, a escolha continua manual.
+As saídas e um manifesto `simulation_*.json` vão a uma pasta temporária externa,
+informada ao terminar. Use `--output` para escolher outro destino.
 A acurácia desse teste não representa desempenho em EEG real.
 
 Para manutenção pela linha de comando:
@@ -192,6 +221,10 @@ Para manutenção pela linha de comando:
 python -m unittest discover -s tests -v
 python tools/simulate_feedback_lsl.py
 python main.py --smoke
+# Apenas uma etapa, ou escolha outro destino externo:
+python main.py --smoke --stage two_legs --output ~/BCI_Dados/teste_pipeline
+# Protocolo completo na interface, com tempos normais:
+python main.py --simulate
 ```
 
 As versões verificadas em Python 3.12 estão em `requirements-lock.txt`, aplicado

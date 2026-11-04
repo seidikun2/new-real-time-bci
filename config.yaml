@@ -28,7 +28,7 @@ experiment:
   session_id    : 1
   exp_name      : "TEST"
   session_type  : "IM_treino"   # o main altera conforme a fase
-  log_root      : "Dados"
+  log_root      : "~/BCI_Dados"   # pasta externa; também pode ser escolhida na interface
 
 runtime:
   source           : eego        # null usa simulate_signal; simulator | hiamp | eego | lsl

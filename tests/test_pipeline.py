@@ -9,6 +9,7 @@ from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.svm import SVC
 
 from bci_core.config_models import load_config
+from bci_core.acquisition import set_source
 from bci_core.protocol import build_schedule
 from bci_core.decoder_calibration import fit_final_model, cross_validate
 from bci_core.data import epoch_trials_sliding, find_marker_signal_pairs, attempts_by_class
@@ -24,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class PipelineTests(unittest.TestCase):
     def setUp(self):
         self.cfg = load_config(str(ROOT / 'config.yaml'))
+        set_source(self.cfg, 'simulator')
 
     def test_protocol_balanced_repeatable_and_timing(self):
         schedule = build_schedule(self.cfg)
@@ -100,7 +102,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(events, {'LEFT_MI_STIM': [2.]})
 
     def test_quality_detects_flat_nan_line_noise_and_time_gaps(self):
-        self.cfg.runtime.simulate_signal = False
+        set_source(self.cfg, 'hiamp')
         fs = self.cfg.fs_hz
         times = np.arange(2048) / fs
         X = np.column_stack([np.zeros(len(times)), np.sin(2*np.pi*50*times), np.random.default_rng(0).normal(size=len(times))])
@@ -190,7 +192,7 @@ class PipelineTests(unittest.TestCase):
     def test_hardware_reference_channel_count_and_transform_preserved(self):
         from bci_core.config_models import expected_signal_channels
         from bci_core.input_hiamp import transform_reference
-        self.cfg.runtime.simulate_signal = False
+        set_source(self.cfg, 'hiamp')
         self.assertEqual(expected_signal_channels(self.cfg), 15)
         X = np.random.default_rng(0).normal(size=(10, 16))
         output = transform_reference(self.cfg, X)

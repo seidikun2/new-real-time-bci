@@ -27,9 +27,10 @@ def eeg_info(channels=64, rate=500., unit='microvolts'):
 class AcquisitionAndReportTests(unittest.TestCase):
     def setUp(self):
         self.cfg = load_config(str(ROOT / 'config.yaml'))
+        set_source(self.cfg, 'simulator')
 
     def test_eego_64_channels_500hz_and_programmable_profile(self):
-        set_source(self.cfg, 'eego')
+        set_source(self.cfg, 'eego', 500, 64)
         self.assertEqual(self.cfg.fs_hz, 500.)
         self.assertEqual(self.cfg.n_channels, 64)
         self.assertFalse(self.cfg.runtime.simulate_signal)

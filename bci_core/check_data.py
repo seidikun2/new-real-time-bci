@@ -14,6 +14,8 @@ from scipy import signal
 from .config_models import expected_signal_channels
 from .acquisition import source_name, recording_config
 from .report import collection_info, write_report
+from .storage import external_path
+from .signal_preview import signal_snapshot
 from .data import read_signal_csv, read_markers_csv
 
 
@@ -147,7 +149,8 @@ def run_check_data(cfg, mode='train', markers_file=None, signal_file=None, save_
     else:
         times, X, names = np.array([]), np.empty((0, 0)), []
     tm, labels = read_markers_csv(markers_file, cfg.codes.code_map)
-    folder = Path(signal_file).parent / '_qc' / Path(signal_file).stem.rsplit('_signal_', 1)[-1]
+    folder = external_path(signal_file).parent / '_qc' / Path(signal_file).stem.rsplit('_signal_', 1)[-1]
+    folder = external_path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     collection = collection_info(cfg, signal_file)
     if len(times) < 2:
@@ -164,6 +167,11 @@ def run_check_data(cfg, mode='train', markers_file=None, signal_file=None, save_
     if report['issues']:
         report['status'] = 'attention'
     report['collection'] = collection
+    snapshot = signal_snapshot(times, X, names)
+    if snapshot is not None:
+        snapshot_file = folder / 'signal_snapshot.npz'
+        np.savez_compressed(snapshot_file, **snapshot)
+        report['snapshot_file'] = str(snapshot_file.resolve())
     (folder / 'quality.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     plt.rcParams.update({'font.size': 9})
     fig, axes = plt.subplots(3, 1, figsize=(13, max(12, len(names)*.34)), layout='constrained')
@@ -172,19 +180,22 @@ def run_check_data(cfg, mode='train', markers_file=None, signal_file=None, save_
     scales = np.maximum(1.4826 * np.median(abs(clean-np.median(clean, axis=0)), axis=0), 1e-9)
     normalized = np.clip((clean-np.median(clean, axis=0))/scales, -6, 6)
     for i, name in enumerate(names):
-        axes[0].plot(times[::step]-origin, normalized[::step, i]+i*10, lw=.4)
+        axes[0].plot(times[::step]-origin, normalized[::step, i]+i*10, lw=.4, color='#334155')
     axes[0].set_yticks(np.arange(len(names))*10, names)
     axes[0].set_title('EEG bruto: escala robusta por canal, picos recortados em ±6 para facilitar leitura')
     for ts, label in zip(tm, labels):
         if label in {'LEFT_MI_STIM', 'RIGHT_MI_STIM', 'REST_STIM'}:
             axes[0].axvline(ts-origin, alpha=.25, color={'LEFT_MI_STIM':'blue','RIGHT_MI_STIM':'red','REST_STIM':'gray'}[label])
     axes[0].set_xlabel('Tempo desde primeira amostra (s); azul LEFT, vermelho RIGHT, cinza REST_STIM')
-    for i, name in enumerate(names):
-        axes[1].semilogy(freq, np.maximum(psd[:, i], 1e-16), label=name)
+    peak = np.maximum(psd.max(axis=0), np.finfo(float).tiny)
+    relative = 10*np.log10(np.maximum(psd/peak, np.finfo(float).tiny))
+    image = axes[1].imshow(relative.T, aspect='auto', origin='lower', cmap='Greys', vmin=-60, vmax=0,
+                           extent=[float(freq[0]), float(freq[-1]), -.5, len(names)-.5])
+    axes[1].set_yticks(range(len(names)), names)
+    axes[1].set(xlabel='Frequência (Hz)', ylabel='Canais', title='Espectro por canal · dB relativos ao pico de cada canal')
     for line in (50, 60):
-        axes[1].axvline(line, color='gray', ls='--')
-    axes[1].set(xlabel='Frequência (Hz)', ylabel=f"PSD ({'escala original' if report['unit'] == 'native' else report['unit']}²/Hz)", title='Espectro bruto por canal · referências de 50/60 Hz')
-    axes[1].legend(ncol=min(len(names), 8), fontsize=7)
+        axes[1].axvline(line, color='#64748b', ls='--', lw=.7)
+    fig.colorbar(image, ax=axes[1], label='dB relativos')
     axes[2].imshow(bad.T, aspect='auto', interpolation='nearest', cmap='Reds', vmin=0, vmax=1)
     axes[2].set_yticks(range(len(names)), names)
     axes[2].set(xlabel='Janela de ~1 s (índice de amostras; consulte lacunas)', title='Artefatos: vermelho = amplitude, flatline, pico robusto ou NaN/Inf')

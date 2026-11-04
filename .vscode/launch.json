@@ -11,14 +11,30 @@
       "justMyCode": true
     },
     {
-      "name": "BCI: testar pipeline simulada (sem Unity)",
+      "name": "BCI: protocolo completo em simulação",
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/main.py",
-      "args": ["--smoke"],
+      "args": [
+        "--simulate"
+      ],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
-      "env": {"MPLBACKEND": "Agg"}
+      "justMyCode": true
+    },
+    {
+      "name": "BCI: validar pipeline completa (8 blocos simulados)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "args": [
+        "--smoke"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "env": {
+        "MPLBACKEND": "Agg"
+      }
     }
   ]
 }

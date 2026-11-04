@@ -9,6 +9,8 @@ from pathlib import Path
 from queue import Queue, Empty
 
 from .acquisition import SOURCES, source_name, set_source, discover_signals
+from .storage import prepare_data_root
+from .signal_preview import SignalPreview
 
 STAGES = {'single_target': 'Etapa 1 · alvo e repouso', 'two_legs': 'Etapa 2 · duas pernas e repouso'}
 PHASES = {'auto': 'Protocolo completo', 'execution': 'Execução motora', 'imagery': 'Imagética motora', 'online': 'Online'}
@@ -22,7 +24,7 @@ class Operator:
         self.root = tk.Tk()
         self.root.title('BCI · condução experimental')
         width, height = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
-        self.root.geometry(f'{min(1060, width-80)}x{min(760, height-100)}')
+        self.root.geometry(f'{min(1240, width-80)}x{min(900, height-100)}')
         self.root.minsize(min(900, width-40), min(620, height-80))
         family = 'Segoe UI' if 'Segoe UI' in font.families(self.root) else font.nametofont('TkDefaultFont').actual('family')
         style = ttk.Style(self.root)
@@ -39,6 +41,7 @@ class Operator:
         style.configure('TCombobox', padding=7)
         style.map('TCombobox', fieldbackground=[('readonly', 'white')])
         style.configure('Treeview', rowheight=34)
+        style.configure('Link.TButton', foreground='#22698b', font=(family, 11, 'underline'), padding=(0, 4), background='#f4f6f9')
         self.root.configure(background='#f4f6f9')
         self.shell = ttk.Frame(self.root, padding=24)
         self.shell.pack(fill='both', expand=True)
@@ -55,6 +58,8 @@ class Operator:
         ttk.Label(self.shell, textvariable=self.subtitle, style='Muted.TLabel', wraplength=970).pack(anchor='w', pady=(6, 12))
         self.note = tk.StringVar()
         ttk.Label(self.shell, textvariable=self.note, wraplength=970).pack(anchor='w', pady=(0, 10))
+        self.report_link = ttk.Button(self.shell, text='Abrir relatório completo', style='Link.TButton', cursor='hand2', command=self.open_report)
+        self.signal_preview = None
         self.buttons = ttk.Frame(self.shell)
         self.buttons.pack(side='bottom', fill='x', pady=(14, 0))
         self.body = ttk.Frame(self.shell)
@@ -78,7 +83,7 @@ class Operator:
         for container in (self.body, self.buttons):
             for widget in container.winfo_children():
                 widget.destroy()
-        self.images = []
+        self.signal_preview = None
         self.parameters.configure(state='normal')
         return self.body
 
@@ -113,6 +118,13 @@ class Operator:
             widget = self.ttk.Combobox(cell, textvariable=variable, values=list(choices[key].values()), state='readonly') if key in choices else self.ttk.Entry(cell, textvariable=variable)
             widget.pack(fill='x')
             self.fields[key] = variable
+        folder = self.ttk.Frame(body)
+        folder.grid(row=3, column=0, columnspan=2, sticky='ew', pady=12)
+        self.ttk.Label(folder, text='Pasta dos dados · fora do projeto').pack(anchor='w', pady=(0, 6))
+        data_root = self.tk.StringVar(value=str(Path(cfg.experiment.log_root).expanduser()))
+        self.fields['data_root'] = data_root
+        self.ttk.Button(folder, text='Escolher pasta…', command=lambda: self.choose_data_root(data_root)).pack(side='right', padx=(8, 0))
+        self.ttk.Entry(folder, textvariable=data_root).pack(side='left', fill='x', expand=True)
         body.columnconfigure(0, weight=1, uniform='field')
         body.columnconfigure(1, weight=1, uniform='field')
         self.button('Preparar protocolo', 'prepare', True)
@@ -124,7 +136,9 @@ class Operator:
                 if not subject or subject in {'.', '..'} or any(c in subject for c in '/\\') or session < 1:
                     raise ValueError('Informe sujeito sem barras e sessão inteira positiva.')
                 source = next(key for key, value in SOURCES.items() if value == self.fields['source'].get())
+                selected_root = prepare_data_root(self.fields['data_root'].get())
                 set_source(cfg, source)
+                cfg.experiment.log_root = selected_root
                 cfg.experiment.subject_id, cfg.experiment.session_id = subject, session
                 cfg.protocol.stage = next(key for key, value in STAGES.items() if value == self.fields['stage'].get())
                 cfg.protocol.online_target = 'left' if self.fields['target'].get() == 'Esquerda' else 'right'
@@ -137,6 +151,24 @@ class Operator:
             except (ValueError, TypeError, StopIteration) as exc:
                 self.notify(f'Confira os campos: {exc}')
         return False
+
+    def choose_data_root(self, variable):
+        selected = self.filedialog.askdirectory(title='Pasta dos dados da sessão', parent=self.root,
+                                                initialdir=variable.get() if Path(variable.get()).is_dir() else str(Path.home()))
+        if selected:
+            variable.set(selected)
+
+    def open_report(self):
+        if self.report_path:
+            webbrowser.open(Path(self.report_path).resolve().as_uri())
+
+    def set_report(self, filename, label):
+        self.report_path = filename
+        if filename:
+            self.report_link.configure(text=f'Abrir relatório completo · {label}')
+            self.report_link.pack(anchor='w', before=self.body, pady=(0, 8))
+        else:
+            self.report_link.pack_forget()
 
     def configure_parameters(self):
         if self.cfg is None:
@@ -208,7 +240,7 @@ class Operator:
             current = self.protocol_labels.index(label)
             self.steps.set('  |  '.join(f'{i+1}. '+value+(' (atual)' if i == current else '') for i, value in enumerate(self.protocol_labels)))
         self.page(label, f'Sujeito {cfg.experiment.subject_id} · sessão {cfg.experiment.session_id} · {SOURCES[source_name(cfg)]}')
-        self.ttk.Label(self.body, text='Abra o Unity e prepare o participante. Inicie quando estiver pronto.', wraplength=920).pack(anchor='w', pady=18)
+        self.ttk.Label(self.body, text='Simulação completa: não precisa de Unity nem equipamento.' if source_name(cfg) == 'simulator' else 'Abra o Unity e prepare o participante. Inicie quando estiver pronto.', wraplength=920).pack(anchor='w', pady=18)
         self.ttk.Label(self.body, text=f'Stream: {cfg.lsl.signal_name or "EEG disponível"}', style='Muted.TLabel').pack(anchor='w')
         self.ttk.Label(self.body, text=f'Dados em: {cfg.experiment.log_root}', style='Muted.TLabel').pack(anchor='w', pady=8)
         self.button('Iniciar bloco', 'start', True)
@@ -222,25 +254,33 @@ class Operator:
         self.cancelled = False
         self.status = self.tk.StringVar(value='Conectando à aquisição…')
         self.event = self.tk.StringVar(value='Preparando streams')
-        self.ttk.Label(self.body, textvariable=self.event, style='Title.TLabel').pack(anchor='w', pady=(15, 12))
+        self.ttk.Label(self.body, textvariable=self.event, style='Muted.TLabel').pack(anchor='w', pady=(4, 6))
         self.ttk.Label(self.body, textvariable=self.status).pack(anchor='w')
         self.bar = self.ttk.Progressbar(self.body, mode='indeterminate')
-        self.bar.pack(fill='x', pady=20)
+        self.bar.pack(fill='x', pady=(8, 12))
         self.bar.start(25)
         self.ttk.Button(self.buttons, text='Interromper e salvar', command=lambda: setattr(self, 'cancelled', True)).pack(side='right')
+        self.preview_tabs = self.ttk.Notebook(self.body)
+        self.preview_tabs.pack(fill='both', expand=True)
+        signal_tab = self.ttk.Frame(self.preview_tabs)
+        self.preview_tabs.add(signal_tab, text='Snapshot do sinal')
+        self.signal_preview = SignalPreview(signal_tab)
         self.live_canvas = None
         self.last_resolve = 0.
         if self.model_ref and self.cfg._raw_config.get('debug_plot', {}).get('enabled', True):
             from .online_inference import read_model_meta
             meta = read_model_meta(self.model_ref)
             self.live_limits = meta['pca_train_xlim'] + meta['pca_train_ylim']
-            self.live_canvas = self.tk.Canvas(self.body, width=400, height=270, background='white', highlightthickness=0)
-            self.live_canvas.pack(pady=5)
-            self.add_image(self.live_canvas, meta['pca_map_png'], (400, 270), canvas=True)
+            pca_tab = self.ttk.Frame(self.preview_tabs)
+            self.preview_tabs.add(pca_tab, text='PCA online')
+            self.live_background = meta['pca_map_png']
+            self.live_canvas = self.tk.Canvas(pca_tab, background='white', highlightthickness=0)
+            self.live_canvas.pack(fill='both', expand=True)
+            self.live_canvas.bind('<Configure>', lambda event: self.resize_live_pca())
             self.live_dot = self.live_canvas.create_oval(0, 0, 0, 0, fill='#173c72', outline='white', width=2)
             self.live_probabilities = self.tk.StringVar(value='Probabilidades: aguardando decoder')
-            self.ttk.Label(self.body, text='PCA · experimentador', style='Muted.TLabel').pack()
-            self.ttk.Label(self.body, textvariable=self.live_probabilities).pack(pady=6)
+            self.ttk.Label(pca_tab, text='PCA · experimentador', style='Muted.TLabel').pack()
+            self.ttk.Label(pca_tab, textvariable=self.live_probabilities).pack(pady=6)
         self.root.update_idletasks()
 
     def set_event(self, label):
@@ -266,12 +306,29 @@ class Operator:
                         left, rest, right = samples[-1][2:5]
                         self.live_probabilities.set(f'Esquerda {left:.0%}    Repouso {rest:.0%}    Direita {right:.0%}')
                         xmin, xmax, ymin, ymax = self.live_limits
-                        px = max(0, min(400, 400*(x-xmin)/(xmax-xmin)))
-                        py = max(0, min(270, 270*(ymax-y)/(ymax-ymin)))
+                        width, height = self.live_canvas.winfo_width(), self.live_canvas.winfo_height()
+                        px = max(0, min(width, width*(x-xmin)/(xmax-xmin)))
+                        py = max(0, min(height, height*(ymax-y)/(ymax-ymin)))
                         self.live_canvas.coords(self.live_dot, px-5, py-5, px+5, py+5)
             except Exception:
                 pass  # Falha na visualização não pode interromper a gravação.
         return not (self.cancelled or self.closing)
+
+    def update_signal_preview(self, snapshot):
+        if self.signal_preview is not None:
+            try:
+                self.signal_preview.update(snapshot)
+            except (ValueError, IndexError, self.tk.TclError):
+                self.signal_preview.caption.set('Snapshot indisponível. A gravação continua; confira o relatório.')
+
+    def resize_live_pca(self):
+        from PIL import Image, ImageTk
+        width, height = max(1, self.live_canvas.winfo_width()), max(1, self.live_canvas.winfo_height())
+        with Image.open(self.live_background) as source:
+            self.live_background_image = ImageTk.PhotoImage(source.resize((width, height)), master=self.root)
+        self.live_canvas.delete('background')
+        self.live_canvas.create_image(0, 0, anchor='nw', image=self.live_background_image, tags='background')
+        self.live_canvas.tag_lower('background')
 
     def end_block(self):
         self.bar.stop()
@@ -307,31 +364,31 @@ class Operator:
             raise value
         return value
 
-    def add_image(self, parent, filename, size=(380, 230), canvas=False):
+    def add_image(self, parent, filename):
         if not filename or not Path(filename).exists():
+            self.ttk.Label(parent, text='Figura indisponível para este bloco.').pack(pady=20)
             return
         from PIL import Image, ImageTk
         with Image.open(filename) as source:
-            image = source.convert('RGB')
-            if canvas:
-                image = image.resize(size)
-            else:
-                image.thumbnail(size)
+            original = source.convert('RGB')
+        label = self.ttk.Label(parent, anchor='center')
+        label.pack(fill='both', expand=True)
+        def resize(event):
+            image = original.copy()
+            image.thumbnail((max(1, event.width-16), max(1, event.height-16)))
             photo = ImageTk.PhotoImage(image, master=self.root)
-        self.images.append(photo)
-        if canvas:
-            parent.create_image(0, 0, anchor='nw', image=photo)
-        else:
-            self.ttk.Label(parent, image=photo).pack(padx=8, pady=8)
+            label.configure(image=photo)
+            label.image = photo
+        label.bind('<Configure>', resize)
 
     def review_block(self, label, block, qc, evaluation):
         complete = block['complete']
         self.page(label + (' · concluído' if complete else ' · INTERROMPIDO'), 'Confira o resultado e escolha como continuar.')
-        self.report_path = qc.get('report_path')
+        self.set_report(qc.get('report_path'), label)
         cv = evaluation.get('cv', {})
         accuracy = cv.get('acc_mean')
         text = f'Acurácia CV: {accuracy:.1%}' if accuracy is not None else 'Acurácia não estimada'
-        self.ttk.Label(self.body, text=text, style='Title.TLabel').pack(anchor='w', pady=8)
+        self.ttk.Label(self.body, text=text, style='Muted.TLabel').pack(anchor='w', pady=4)
         messages = []
         if not complete:
             messages.append(f"Dados parciais salvos. {block.get('reason', '')}")
@@ -339,15 +396,27 @@ class Operator:
             messages.append(evaluation['error'])
         if qc.get('issues'):
             messages.append(f"Qualidade: {len(qc['issues'])} ponto(s) de atenção. Consulte o relatório.")
-        self.ttk.Label(self.body, text='\n'.join(messages), wraplength=950).pack(anchor='w', pady=10)
-        pictures = self.ttk.Frame(self.body)
-        pictures.pack(fill='x')
-        for filename in [evaluation.get('pca_check_png'), str(Path(self.report_path).with_name('confusion_matrix.png')) if self.report_path else None]:
-            box = self.ttk.Frame(pictures)
-            box.pack(side='left', fill='both', expand=True)
-            self.add_image(box, filename)
-        if self.report_path:
-            self.ttk.Button(self.buttons, text='Abrir relatório', command=lambda: webbrowser.open(Path(self.report_path).as_uri())).pack(side='left')
+        self.ttk.Label(self.body, text='\n'.join(messages), wraplength=950).pack(anchor='w', pady=5)
+        tabs = self.ttk.Notebook(self.body)
+        tabs.pack(fill='both', expand=True)
+        signal_tab = self.ttk.Frame(tabs)
+        tabs.add(signal_tab, text='Snapshot do sinal')
+        self.signal_preview = SignalPreview(signal_tab)
+        snapshot_file = qc.get('snapshot_file')
+        if snapshot_file and Path(snapshot_file).exists():
+            import numpy as np
+            try:
+                with np.load(snapshot_file, allow_pickle=False) as snapshot:
+                    self.update_signal_preview({key: snapshot[key] for key in ['times', 'values', 'channels']})
+            except (OSError, ValueError, KeyError):
+                self.signal_preview.caption.set('Snapshot indisponível; consulte o relatório completo.')
+        else:
+            self.signal_preview.caption.set('Sem sinal suficiente para gerar um snapshot deste bloco.')
+        for title, filename in [('PCA', evaluation.get('pca_check_png')),
+                                ('Matriz de confusão', str(Path(self.report_path).with_name('confusion_matrix.png')) if self.report_path else None)]:
+            tab = self.ttk.Frame(tabs)
+            tabs.add(tab, text=title)
+            self.add_image(tab, filename)
         self.button('Próximo bloco', 'next', True)
         self.button('Repetir bloco', 'repeat')
         if self.model_ref:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Tuple, Optional
 import yaml
+from .storage import DEFAULT_DATA_ROOT
 
 
 @dataclass
@@ -148,7 +149,7 @@ def load_config(path: str = "config.yaml") -> AppConfig:
         raise ValueError("A janela precisa caber dentro do ATTEMPT.")
     if values["n_channels"] < 2 or values["pca_dim"] != 2 or values["cv_splits"] < 2:
         raise ValueError("Use >=2 canais, pca_dim: 2 e cv_splits >=2.")
-    exp_values = dict(subject_id="TEST", session_id=1, log_root="Dados", exp_name="TEST", session_type="IM_treino")
+    exp_values = dict(subject_id="TEST", session_id=1, log_root=DEFAULT_DATA_ROOT, exp_name="TEST", session_type="IM_treino")
     exp_values.update(raw.get("experiment", {}))
     exp = ExperimentConfig(**exp_values)
     for name in (exp.subject_id, exp.exp_name, exp.session_type):

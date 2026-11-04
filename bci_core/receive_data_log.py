@@ -1,5 +1,8 @@
 """Uma gravação por bloco; marcadores usam o mesmo timestamp enviado ao Unity."""
 import csv
+from collections import deque
+
+import numpy as np
 import json
 import threading
 import time
@@ -8,13 +11,19 @@ from datetime import datetime
 from pathlib import Path
 
 from .acquisition import stream_layout
+from .storage import external_path
 
 from pylsl import StreamInlet, local_clock, resolve_byprop, proc_clocksync
 
 
 def make_log_dir(cfg, mode):
+    cfg.experiment.log_root = str(external_path(cfg.experiment.log_root))
     root = Path(cfg.experiment.log_root) / cfg.experiment.subject_id / f'S{cfg.experiment.session_id}'
-    return root / 'online' if mode == 'online' else root / cfg.experiment.session_type / mode
+    folder = root / 'online' if mode == 'online' else root / cfg.experiment.session_type / mode
+    folder = external_path(folder)
+    if not folder.is_relative_to(Path(cfg.experiment.log_root)):
+        raise ValueError('A sessão deve ficar dentro da pasta de dados escolhida.')
+    return folder
 
 
 def resolve_signal(cfg, stop, timeout=30.):
@@ -51,6 +60,9 @@ class BlockRecorder:
         self.ready = threading.Event()
         self.last_sample_at = None
         self.samples = 0
+        self.preview_lock = threading.Lock()
+        self.preview_values = deque()
+        self.preview_times = deque()
         self.stream_metadata = None
         self.requested_at = datetime.now().astimezone().isoformat(timespec='milliseconds')
         self.started_at = None
@@ -84,6 +96,8 @@ class BlockRecorder:
         try:
             info = inlet.info()
             indices, factors, self.stream_metadata = stream_layout(self.cfg, info)
+            self.preview_values = deque(maxlen=max(2, round(self.stream_metadata['fs_hz']*5)))
+            self.preview_times = deque(maxlen=self.preview_values.maxlen)
             self.metadata['stream'] = self.stream_metadata
             self.save_metadata(self.metadata)
             with self.signal_path.open('x', newline='', encoding='utf-8') as stream:
@@ -99,15 +113,26 @@ class BlockRecorder:
                         self.metadata['started_at'] = self.started_at
                         self.save_metadata(self.metadata)
                     self.ended_at = datetime.fromtimestamp(stamps[-1]+self.offset).astimezone().isoformat(timespec='milliseconds')
+                    converted = np.asarray(samples, float)[:, indices] * factors
                     now = time.time()
-                    for sample, stamp in zip(samples, stamps):
-                        writer.writerow([datetime.fromtimestamp(stamp+self.offset).isoformat(), f'{stamp:.9f}', now, *(float(sample[i])*factor for i, factor in zip(indices, factors))])
+                    for sample, stamp in zip(converted, stamps):
+                        writer.writerow([datetime.fromtimestamp(stamp+self.offset).isoformat(), f'{stamp:.9f}', now, *sample])
                     stream.flush()
+                    with self.preview_lock:
+                        self.preview_values.extend(converted)
+                        self.preview_times.extend(stamps)
                     self.samples += len(stamps)
                     self.last_sample_at = time.monotonic()
                     self.ready.set()
         finally:
             inlet.close_stream()
+
+    def snapshot(self):
+        with self.preview_lock:
+            if len(self.preview_times) < 2:
+                return None
+            return {'times': np.asarray(self.preview_times), 'values': np.asarray(self.preview_values),
+                    'channels': np.asarray(self.stream_metadata['recorded_channels'], dtype=str)}
 
     def close(self):
         self.marker_file.close()

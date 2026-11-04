@@ -1,8 +1,9 @@
 # ANT Neuro eego mylab via LSL
 
 A integração recebe o EEG de um **transmissor LSL já iniciado**. O Python não abre
-o driver eego diretamente. A configuração inicial é 500 Hz e 64 canais, com taxa,
-quantidade e seleção de canais editáveis pela tela de preparação.
+o driver eego diretamente. O perfil atual da estação está em 500 Hz e 29 canais;
+a recepção também aceita os 64 canais da touca, adotando a quantidade anunciada
+pelo stream. Taxa, quantidade esperada e seleção de canais ficam em **Parâmetros**.
 
 ## O que foi verificado
 
@@ -35,13 +36,15 @@ ainda requer teste no laboratório; a verificação acima é de código público
 1. Inicie o transmissor LSL do eego e o Unity.
 2. No VS Code, F5 → **BCI: conduzir experimento**. Escolha **ANT Neuro · eego mylab**.
 3. O nome LSL da estação já vem preenchido. Na operação normal, basta sujeito,
-   sessão e etapa. **Parâmetros** permite mudar nome, taxa inicial, quantidade
-   esperada e canais a gravar; não há campo de unidade.
+   sessão, etapa e **Pasta dos dados**, fora do projeto. **Parâmetros** permite mudar
+   nome, taxa inicial, quantidade esperada e canais a gravar; não há campo de unidade.
 4. Clique **Iniciar bloco**. A conexão adota a frequência e a quantidade de canais
    efetivamente anunciadas pelo transmissor. Uma diferença em relação ao perfil
    inicial fica como observação, sem impedir o registro. Não há reamostragem.
-5. A mesma janela acompanha coleta, análise automática e resultados. O navegador
-   só abre se você clicar em **Abrir relatório**. Não há confirmações de QC ou treino.
+5. A mesma janela acompanha coleta, análise automática e resultados. O snapshot
+   ao vivo mostra os últimos cinco segundos, com os nomes dos canais no eixo vertical
+   e rolagem para os 64 canais. Entre blocos, as figuras ficam em abas maiores e o link
+   **Abrir relatório completo** permanece disponível. Não há confirmações de QC ou treino.
 6. Antes do online, selecione um modelo na janela principal. Ele precisa usar a
    mesma taxa, canais e escala do sinal; nenhum treino novo troca o modelo ativo.
 
@@ -77,7 +80,7 @@ eego:
   signal_name: "EE225-020034-000905_on_DESKTOP-U197OKE"
   signal_type: EEG
   fs_hz: 500.0
-  n_channels: 64             # perfil inicial; usa a quantidade anunciada
+  n_channels: 29             # perfil da estação; adota também streams com 64 canais
   receive_channels: []       # todos; ou uma lista de índices/nomes
   receive_by: index          # index | name
   index_base: 1

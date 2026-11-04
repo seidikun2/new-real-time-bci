@@ -25,12 +25,13 @@ from bci_core.intention_control import run_intention_controller
 from bci_core.decoder_calibration import run_calibration
 from bci_core.check_data import run_check_data
 from bci_core.data import find_marker_signal_pairs
+from bci_core.storage import external_path, prepare_data_root
 
 PROJECT = Path(__file__).resolve().parent
 
 
 def session_root(cfg):
-    return Path(cfg.experiment.log_root) / cfg.experiment.subject_id / f'S{cfg.experiment.session_id}'
+    return external_path(cfg.experiment.log_root) / cfg.experiment.subject_id / f'S{cfg.experiment.session_id}'
 
 
 def with_session(cfg, session_type):
@@ -141,6 +142,7 @@ def run_block(cfg, mode='train', model_ref=None, block_index=0, operator=None):
     dashboard = None
     p = cfg._raw_config['protocol']
     timeout = float(p.get('startup_timeout_s', 30.))
+    next_preview = 0.
     def worker(function, *args, **kwargs):
         try:
             function(*args, **kwargs)
@@ -154,10 +156,17 @@ def run_block(cfg, mode='train', model_ref=None, block_index=0, operator=None):
     if operator:
         operator.begin_block()
     def check():
+        nonlocal next_preview
         stream = recorder.stream_metadata
         description = f" · {stream['fs_hz']:g} Hz · {len(stream['recorded_channels'])} canais" if stream else ''
         if operator and not operator.poll_block(f'{recorder.samples} amostras gravadas{description}'):
             raise KeyboardInterrupt('Interrompido pelo experimentador.')
+        preview = getattr(operator, 'update_signal_preview', None)
+        if preview and time.monotonic() >= next_preview:
+            snapshot = recorder.snapshot()
+            if snapshot is not None:
+                preview(snapshot)
+            next_preview = time.monotonic()+1.
         try:
             raise errors.get_nowait()
         except Empty:
@@ -264,9 +273,9 @@ def online_modes(cfg):
     return cfg._raw_config['protocol'].get(key, cfg.protocol.online_modes)
 
 
-def run_experiment(cfg, operator):
+def protocol_blocks(cfg, full=False):
     p = cfg.protocol
-    phase = p.start_phase if p.start_phase != 'auto' else 'execution'
+    phase = 'execution' if full or p.start_phase == 'auto' else p.start_phase
     if phase not in {'execution', 'imagery', 'online'}:
         raise ValueError('start_phase deve ser auto, execution, imagery ou online.')
     blocks = []
@@ -275,6 +284,11 @@ def run_experiment(cfg, operator):
     if phase in {'execution', 'imagery'}:
         blocks.append(('Imagética motora', p.imagery_session_type, 'train'))
     blocks += [(m['label'], m['session_type'], 'online') for m in online_modes(cfg)]
+    return blocks
+
+
+def run_experiment(cfg, operator):
+    blocks = protocol_blocks(cfg)
     operator.set_protocol([label for label, _, _ in blocks])
     model_ref = None
     for label, session_type, mode in blocks:
@@ -310,37 +324,68 @@ def run_experiment(cfg, operator):
     operator.finish('Protocolo finalizado. Os dados e relatórios estão salvos.')
 
 
+def run_simulation_check(cfg, output=None, stages=('single_target', 'two_legs')):
+    """Percorre EM, IM e os dois online em cada etapa, com os mesmos componentes."""
+    from tempfile import mkdtemp
+    set_source(cfg, 'simulator')
+    cfg.experiment.log_root = prepare_data_root(output or mkdtemp(prefix='bci-full-simulation-'))
+    cfg.n_channels = cfg.sim_signal.channels = 4
+    cfg.trial_duration_s = cfg.sim_burst.dur = .4
+    cfg.window_s = cfg.decoder.epoch_s = .2
+    cfg.step_s = cfg.decoder.step_s = .1
+    cfg._raw_config['debug_plot'] = {'enabled': False}
+    cfg._raw_config['protocol'].update(trials_per_class=3, baseline_s=.2, attention_s=.1, cue_s=.1, rest_s=.1)
+    cfg._raw_config['representation_feedback']['grid_size'] = 40
+    cfg.cv_splits = 2
+    results = []
+    for stage in stages:
+        cfg.protocol.stage = stage
+        cfg.protocol.training_mode = 'target_vs_rest' if stage == 'single_target' else 'left_right_vs_rest'
+        cfg._raw_config['protocol'].update(stage=stage, training_mode=cfg.protocol.training_mode)
+        model_ref = None
+        for label, session_type, mode in protocol_blocks(cfg, full=True):
+            block_cfg = with_session(cfg, session_type)
+            block = run_block(block_cfg, mode, model_ref if mode == 'online' else None)
+            qc, evaluation = analyze_block(block_cfg, block)
+            if not block['complete'] or evaluation.get('cv', {}).get('status') != 'ok':
+                raise RuntimeError(f'Simulação falhou em {stage}/{label}: {block["reason"]}; {evaluation.get("error", evaluation.get("cv"))}')
+            if session_type == cfg.protocol.imagery_session_type:
+                model_ref = str(Path(evaluation['pca_map_json']).parent)
+            results.append({'stage': stage, 'block': label, 'session_type': session_type, 'mode': mode,
+                            'markers_file': block['markers_file'], 'signal_file': block['signal_file'],
+                            'report': qc['report_path'], 'model_used': model_ref if mode == 'online' else None,
+                            'cv': evaluation['cv']})
+    manifest = Path(cfg.experiment.log_root) / f'simulation_{datetime.now():%Y%m%d_%H%M%S_%f}.json'
+    manifest.write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding='utf-8')
+    print(f'SIMULAÇÃO COMPLETA OK: {len(results)} blocos. Relatórios e manifesto em {cfg.experiment.log_root}')
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', default=str(PROJECT / 'config.yaml'))
-    parser.add_argument('--smoke', action='store_true', help='Coleta e treina blocos simulados curtos, sem Unity/hardware/GUI.')
-    parser.add_argument('--output', help='Diretório de saída exclusivo da simulação smoke.')
+    parser.add_argument('--smoke', action='store_true', help='Teste curto do protocolo completo, nas duas etapas, sem Unity/hardware/GUI.')
+    parser.add_argument('--simulate', action='store_true', help='Abrir o protocolo completo na interface em modo simulado.')
+    parser.add_argument('--stage', choices=['single_target', 'two_legs', 'both'], help='Etapa; both é exclusivo de --smoke.')
+    parser.add_argument('--output', help='Pasta dos dados fora do projeto.')
     args = parser.parse_args()
     cfg = load_config(args.config)
     if args.smoke:
-        from tempfile import mkdtemp
-        set_source(cfg, 'simulator')
-        cfg.experiment.log_root = args.output or mkdtemp(prefix='bci-smoke-')
-        cfg.n_channels = cfg.sim_signal.channels = 4
-        cfg.trial_duration_s = cfg.sim_burst.dur = .4
-        cfg.window_s = cfg.decoder.epoch_s = .2
-        cfg.step_s = cfg.decoder.step_s = .1
-        cfg._raw_config['debug_plot'] = {'enabled': False}
-        cfg._raw_config['protocol'].update(trials_per_class=2, baseline_s=.2, attention_s=.1, cue_s=.1, rest_s=.1)
-        cfg._raw_config['representation_feedback']['grid_size'] = 40
-        cfg.cv_splits = 2
-        first = run_block(cfg)
-        qc, evaluation = analyze_block(cfg, first)
-        if not first['complete'] or 'error' in evaluation or evaluation.get('cv', {}).get('status') != 'ok':
-            raise RuntimeError(f'Smoke treino falhou: {first}; {evaluation}')
-        reference = str(Path(evaluation['pca_map_json']).parent)
-        cfg = with_session(cfg, 'IM_online_smoke')
-        online = run_block(cfg, 'online', reference)
-        qc, evaluation = analyze_block(cfg, online)
-        if not online['complete'] or 'error' in evaluation or evaluation.get('cv', {}).get('status') != 'ok':
-            raise RuntimeError(f'Smoke online falhou: {online}; {evaluation}')
-        print(f'SMOKE OK: coleta, QC, treino e online. Dados em {cfg.experiment.log_root}')
+        stages = ('single_target', 'two_legs') if args.stage in {None, 'both'} else (args.stage,)
+        run_simulation_check(cfg, args.output, stages)
         return
+    if args.stage == 'both':
+        parser.error('--stage both requer --smoke; na interface, escolha uma etapa por sessão.')
+    if args.stage:
+        cfg.protocol.stage = args.stage
+        cfg.protocol.training_mode = 'target_vs_rest' if args.stage == 'single_target' else 'left_right_vs_rest'
+        cfg._raw_config['protocol'].update(stage=args.stage, training_mode=cfg.protocol.training_mode)
+    if args.simulate:
+        set_source(cfg, 'simulator')
+        cfg.protocol.start_phase = 'auto'
+        cfg._raw_config['protocol']['start_phase'] = 'auto'
+    if args.output:
+        cfg.experiment.log_root = str(external_path(args.output))
     from bci_core.operator import Operator
     operator = Operator()
     try:

@@ -14,6 +14,7 @@ from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.svm import SVC
 
 from .acquisition import recording_config
+from .storage import external_path
 from .class_schema import class_details, training_label_map
 from .data import (read_signal_csv, read_markers_csv, select_channel_indices,
                    bandpass_causal, attempts_by_class, epoch_trials_sliding)
@@ -97,9 +98,10 @@ def run_calibration(cfg, markers_file, signal_file):
         raise ValueError('Uma classe ficou sem janelas válidas; modelo não foi treinado.')
     cv = cross_validate(Xw, y, groups, cfg.svc_c, cfg.cv_splits, cfg.rng_seed)
     reference, pca, classifier, projected = fit_final_model(Xw, y, cfg.pca_dim, cfg.svc_c, cfg.rng_seed)
-    signal_path = Path(signal_file).resolve()
+    signal_path = external_path(signal_file)
     run_id = signal_path.stem.rsplit('_signal_', 1)[-1]
     model_dir = signal_path.parent / '_model' / f'{run_id}_{cfg.protocol.stage}_{datetime.now():%Y%m%d_%H%M%S_%f}'
+    model_dir = external_path(model_dir)
     model_dir.mkdir(parents=True, exist_ok=True)
     details = class_details(label_map, cfg.codes.code_map)
     representation = prepare_training_representation(
