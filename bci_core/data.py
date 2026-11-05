@@ -8,6 +8,28 @@ from scipy import signal
 from .class_schema import STIM_CLASS_ORDER
 
 
+def timestamp_integrity(times):
+    """Diagnóstico dos horários originais; não altera nem reordena amostras."""
+    times = np.asarray(times, float)
+    with np.errstate(invalid='ignore'):
+        delta = np.diff(times)
+    finite = np.isfinite(delta)
+    backwards = delta[finite & (delta < 0)]
+    bad_rows = np.r_[np.flatnonzero(~np.isfinite(times)), np.flatnonzero(finite & (delta <= 0))+1]
+    result = {'nonfinite_samples': int(np.sum(~np.isfinite(times))),
+              'duplicate_pairs': int(np.sum(finite & (delta == 0))),
+              'backward_pairs': len(backwards),
+              'largest_backward_s': float(-backwards.min()) if len(backwards) else 0.,
+              'first_bad_csv_row': int(bad_rows.min())+2 if len(bad_rows) else None,
+              'error': None}
+    if len(bad_rows):
+        result['error'] = (f"Timestamps EEG inválidos: {result['nonfinite_samples']} não finitos; "
+                           f"{result['duplicate_pairs']} pares duplicados; {result['backward_pairs']} recuos "
+                           f"(maior: {result['largest_backward_s']*1000:.6g} ms). "
+                           f"Primeira ocorrência na linha {result['first_bad_csv_row']} do CSV.")
+    return result
+
+
 def find_marker_signal_pairs(folder):
     pairs = []
     for marker in Path(folder).glob('*_markers_*.csv'):

@@ -138,6 +138,13 @@ selecionados para o classificador:
   intervalos longos, cobertura dos trials e coerência dos marcadores.
 - Bloco incompleto, ausência de classes e falhas na avaliação ficam explícitos.
 
+O erro temporal detalha separadamente horários não finitos, pares duplicados e
+recuos, com o maior recuo em milissegundos e a primeira linha afetada no CSV.
+Essas métricas também ficam em `timestamp_integrity` no `quality.json`.
+Canais constantes são identificados pelo pico a pico zero, inclusive quando o
+desvio calculado tem um pequeno resíduo numérico. Canais iguais ou planos geram
+avisos de qualidade; não são um veto automático ao treino.
+
 Os limites em `quality` são heurísticos e dependem da unidade/ganho do stream.
 O g.HIamp declara µV; confirme isso na estação real antes de usar limites absolutos.
 A simulação usa ruído branco: as proporções espectrais são mostradas como

@@ -88,6 +88,25 @@ class AcquisitionAndReportTests(unittest.TestCase):
         self.assertNotIn('canal plano', result['channels'][0]['reasons'])
         self.assertEqual(result['unit'], 'native')
 
+    def test_nonzero_constant_native_channels_are_flat_despite_std_roundoff(self):
+        set_source(self.cfg, 'eego', 500, 6)
+        self.cfg._recorded_unit = 'native'
+        names = ['Fp2', 'C3', 'CP2', 'C6', 'Cz', 'Trigger']
+        times = np.arange(2048)/500
+        X = np.full((len(times), len(names)), -83886.08)
+        X[:, 4] = np.random.default_rng(6).normal(size=len(times))
+        X[:, 5] = 0.
+        report, *_, bad = inspect_quality(times, X, names, np.array([0., 4.]),
+                                         ['BASELINE', 'BLOCK_END'], self.cfg)
+        for index in [0, 1, 2, 3, 5]:
+            row = report['channels'][index]
+            self.assertEqual(row['std'], 0.)
+            self.assertEqual(row['peak_to_peak'], 0.)
+            self.assertIn('canal plano', row['reasons'])
+            self.assertTrue(bad[:, index].all())
+        self.assertNotIn('canal plano', report['channels'][4]['reasons'])
+        self.assertIn('Canais idênticos: Fp2 e C3.', report['issues'])
+
     def test_stream_without_source_id_is_read_without_requesting_auto_recovery(self):
         import threading
         from unittest.mock import Mock, patch

@@ -16,7 +16,7 @@ from .acquisition import source_name, recording_config
 from .report import collection_info, write_report
 from .storage import external_path
 from .signal_preview import signal_snapshot
-from .data import read_signal_csv, read_markers_csv
+from .data import read_signal_csv, read_markers_csv, timestamp_integrity
 
 
 def inspect_quality(times, X, names, marker_times, labels, cfg):
@@ -38,8 +38,9 @@ def inspect_quality(times, X, names, marker_times, labels, cfg):
     estimated_fs = float(1 / np.median(good_dt)) if len(good_dt) else None
     gaps = int(np.sum(differences > 1.5 / fs))
     missing = int(np.sum(np.maximum(np.round(good_dt * fs) - 1, 0)))
-    if not np.isfinite(times).all() or np.any(differences <= 0):
-        issues.append('ERRO: timestamps EEG não finitos, duplicados ou fora de ordem.')
+    timing = timestamp_integrity(times)
+    if timing['error']:
+        issues.append('ERRO: ' + timing['error'])
     if gaps:
         issues.append(f'Descontinuidade/jitter: {gaps} intervalos longos (~{missing} amostras potencialmente ausentes; estimativa por timestamps).')
     if estimated_fs is None or abs(estimated_fs-fs) / fs > .05:
@@ -96,15 +97,18 @@ def inspect_quality(times, X, names, marker_times, labels, cfg):
     for window in windows:
         finite = np.isfinite(window).all(axis=0)
         safe = np.nan_to_num(window, nan=0., posinf=0., neginf=0.)
-        flag = (~finite | (np.ptp(safe, axis=0) > peak_limit) |
-                (np.std(safe, axis=0) <= flat_limit) |
+        span = np.ptp(safe, axis=0)
+        flag = (~finite | (span > peak_limit) |
+                (span == 0) | (np.std(safe, axis=0) <= flat_limit) |
                 (np.max(abs(safe-med), axis=0) > q.get('max_robust_z', 8.) * np.maximum(robust_scale, np.finfo(float).tiny)))
         bad.append(flag)
     bad = np.asarray(bad, bool)
     rows = []
     for i, name in enumerate(names):
         reasons = []
-        std = float(np.std(clean[:, i]))
+        span = float(np.ptp(clean[:, i]))
+        # Uma constante não nula pode ter std residual por arredondamento.
+        std = float(np.std(clean[:, i])) if span else 0.
         invalid = int(np.sum(~np.isfinite(X[:, i])))
         bad_fraction = float(np.mean(bad[:, i]))
         if invalid:
@@ -121,7 +125,7 @@ def inspect_quality(times, X, names, marker_times, labels, cfg):
         flat_fraction = float(np.mean(np.diff(clean[:, i]) == 0))
         if flat_fraction > .1:
             reasons.append('patamares/repetição de amostras')
-        rows.append(dict(channel=name, std=std, peak_to_peak=float(np.ptp(clean[:, i])),
+        rows.append(dict(channel=name, std=std, peak_to_peak=span,
                          invalid_samples=invalid, bad_window_fraction=bad_fraction,
                          line_noise_ratio=float(line_ratio[i]), high_frequency_ratio=float(high_ratio[i]),
                          repeated_fraction=flat_fraction, reasons=reasons))
@@ -133,6 +137,7 @@ def inspect_quality(times, X, names, marker_times, labels, cfg):
             if np.array_equal(clean[:, i], clean[:, j]):
                 issues.append(f'Canais idênticos: {names[j]} e {names[i]}.')
     report = dict(status='attention' if issues else 'ok', issues=list(dict.fromkeys(issues)),
+                  timestamp_integrity=timing,
                   estimated_fs_hz=estimated_fs, samples=len(times), gaps=gaps, estimated_missing_samples=missing,
                   marker_counts=dict(counts), channels=rows, unit=unit,
                   source=source_name(cfg), simulated=simulated, observations=observations,

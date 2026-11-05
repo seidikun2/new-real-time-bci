@@ -11,8 +11,8 @@ from sklearn.svm import SVC
 from bci_core.config_models import load_config
 from bci_core.acquisition import set_source
 from bci_core.protocol import build_schedule
-from bci_core.decoder_calibration import fit_final_model, cross_validate
-from bci_core.data import epoch_trials_sliding, find_marker_signal_pairs, attempts_by_class
+from bci_core.decoder_calibration import fit_final_model, cross_validate, run_calibration
+from bci_core.data import epoch_trials_sliding, find_marker_signal_pairs, attempts_by_class, timestamp_integrity
 from bci_core.check_data import inspect_quality, run_check_data
 from bci_core.online_inference import window_to_feature
 from bci_core.intention_control import IntentionStateMachine, approach
@@ -85,6 +85,37 @@ class PipelineTests(unittest.TestCase):
         tiny = cross_validate(X[:2], np.array([0, 1]), np.array([0, 1]), 1., 5)
         self.assertIsNone(tiny['acc_mean'])
         self.assertEqual(tiny['splits'], 0)
+
+    def test_identical_channels_and_one_flat_still_train_in_full_space(self):
+        X = np.repeat(np.random.default_rng(9).normal(size=(12, 1, 250)), 4, axis=1)
+        X[:, 3] = 0.
+        y = np.repeat([0, 1], 6)
+        reference, pca, classifier, visual = fit_final_model(X, y)
+        self.assertEqual(classifier.n_features_in_, 10)
+        self.assertTrue(np.isfinite(visual).all())
+        self.assertEqual(cross_validate(X, y, np.arange(12), 1., 2)['status'], 'ok')
+
+    def test_timestamp_diagnostic_and_training_report_exact_failures(self):
+        times = np.array([0., .002, .002, .001, np.nan, np.inf])
+        original = times.copy()
+        result = timestamp_integrity(times)
+        self.assertEqual(result['nonfinite_samples'], 2)
+        self.assertEqual(result['duplicate_pairs'], 1)
+        self.assertEqual(result['backward_pairs'], 1)
+        self.assertAlmostEqual(result['largest_backward_s'], .001)
+        self.assertEqual(result['first_bad_csv_row'], 4)
+        np.testing.assert_array_equal(times, original)
+        self.assertIsNone(timestamp_integrity([1., 1.002, 1.05])['error'])
+        with tempfile.TemporaryDirectory() as folder:
+            markers = Path(folder) / 'markers.csv'
+            signal = Path(folder) / 'signal.csv'
+            markers.write_text('lsl_time_s,label\n0,BASELINE\n')
+            text = 'lsl_time_s,ch1,ch2\n0,1,2\n.002,2,3\n.002,3,4\n.001,4,5\nnan,5,6\ninf,6,7\n'
+            signal.write_text(text)
+            with self.assertRaises(ValueError) as error:
+                run_calibration(self.cfg, str(markers), str(signal))
+            self.assertEqual(str(error.exception), result['error'])
+            self.assertEqual(signal.read_text(), text)
 
     def test_windows_do_not_bridge_gaps_or_exceed_attempt(self):
         fs = 100

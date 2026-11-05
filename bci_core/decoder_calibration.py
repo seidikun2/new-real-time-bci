@@ -17,7 +17,7 @@ from .acquisition import recording_config
 from .storage import external_path
 from .class_schema import class_details, training_label_map
 from .data import (read_signal_csv, read_markers_csv, select_channel_indices,
-                   bandpass_causal, attempts_by_class, epoch_trials_sliding)
+                   bandpass_causal, attempts_by_class, epoch_trials_sliding, timestamp_integrity)
 from .representation_feedback import prepare_training_representation
 
 
@@ -78,8 +78,11 @@ def run_calibration(cfg, markers_file, signal_file):
     cfg = recording_config(cfg, signal_file)
     times, X, names = read_signal_csv(signal_file)
     tm, labels = read_markers_csv(markers_file, cfg.codes.code_map)
-    if len(times) < 2 or not np.isfinite(times).all() or np.any(np.diff(times) <= 0):
-        raise ValueError('Timestamps EEG inválidos: consulte o relatório de qualidade.')
+    if len(times) < 2:
+        raise ValueError('EEG sem amostras suficientes para treinar.')
+    timing = timestamp_integrity(times)
+    if timing['error']:
+        raise ValueError(timing['error'])
     if not np.isfinite(X).all():
         raise ValueError('EEG contém NaN/Inf: consulte o relatório antes de treinar.')
     if not np.isfinite(tm).all() or np.any(np.diff(tm) < 0):
