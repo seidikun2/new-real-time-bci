@@ -71,7 +71,7 @@ protocol:
       label         : "Online duas pernas · bloco 2"
       session_type  : "IM_online_duas_pernas_sem_feedback"
 
-  # 15 tentativas por classe = 45 trials, como os 3 ciclos antigos de 5.
+  # Perfil atual: 5 tentativas por classe = 15 trials; use 15 para 45 trials.
   trials_per_class : 5
   baseline_s       : 3.0
   attention_s      : 2.0
@@ -81,6 +81,16 @@ protocol:
   signal_stall_s   : 3.0
 
   min_cv_accuracy      : null
+
+# EEG externo: pós-processamento padrão LSL e cópia independente sem regularização.
+# Limites são verificações temporais; não removem amostras nem autorizam treino após saltos grandes.
+acquisition_timing:
+  method: dejitter        # dejitter = clocksync + dejitter + monotonize; clocksync = apenas relógio
+  warmup_s: 5.0          # antes dos estímulos; as amostras são preservadas
+  max_backward_s: 0.02   # maior recuo tolerado nos horários originais/sincronizados
+  max_gap_s: 0.10        # maior intervalo entre timestamps tolerado
+  max_age_s: 0.25        # distância máxima entre última amostra recebida e relógio local
+  queue_batches: 128     # fila limitada; estouro é falha explícita, nunca descarte silencioso
 
 # #############################################################################
 # CONFIGURAÇÕES TÉCNICAS / AVANÇADAS

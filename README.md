@@ -70,7 +70,8 @@ mantidos; para um teste curto automático das duas etapas, use a validação aba
 - `two_legs`: `LEFT_MI_STIM` vs `RIGHT_MI_STIM` vs `REST_STIM`.
 - `start_phase: auto` percorre a sequência completa. É possível começar na
   imagética ou no online, selecionando um modelo existente.
-- São 15 tentativas por classe, 45 ao todo, com embaralhamento balanceado
+- O perfil atual usa 5 tentativas por classe, 15 ao todo; use `trials_per_class: 15`
+  para 45 tentativas. O embaralhamento balanceado é
   reprodutível (`rng_seed`). Repetições de um bloco usam outra semente.
 - Baseline: 3 s; em cada trial: atenção 2 s → cue 1,25 s → tentativa 3,75 s →
   pausa 2 s. Os tempos e a quantidade estão em `protocol`; a tentativa continua
@@ -161,6 +162,37 @@ treino não atravessam intervalos maiores que 20 ms (ou 1,5 amostra, se maior).
 A inferência interrompe o bloco em descontinuidades maiores que 100 ms, NaN/Inf,
 falha de componentes ou interrupção prolongada da aquisição.
 
+Para EEG externo, a recepção usa **clocksync + dejitter + monotonize do próprio LSL**.
+O arquivo `*_signal_*.csv` guarda os horários de trabalho. Um segundo inlet grava
+uma cópia independente `*_raw_eeg_*.csv`, com todos os canais publicados, amplitudes
+na escala original, `source_lsl_time_s` sem pós-processamento e `clock_correction_s`.
+O `lsl_time_s` dessa cópia é apenas o horário original mais a correção de relógio.
+Os inlets podem começar em amostras diferentes: seus índices e contagens não são
+pareados. Essa cópia é para auditoria e não pode ser escolhida como dados de treino.
+
+Leitura e escrita usam threads separadas e uma fila limitada. Uma fila cheia é
+registrada como falha explícita. O timeout de aquisição mede a última **recepção**,
+sem confundir uma escrita lenta com ausência de EEG. O JSON e o relatório separam
+pausas de recepção, atraso de gravação, amostras recebidas/gravadas e recuos nos
+horários originais, sincronizados e de trabalho.
+
+Os limites em `acquisition_timing` são verificações temporais: por padrão, recuos
+originais acima de 20 ms, intervalos acima de 100 ms e distância da última amostra
+ao relógio de recepção acima de 250 ms impedem o treino. Durante o protocolo também
+interrompem o bloco; no teste de aquisição são diagnosticados sem encerrar a coleta.
+Ausência prolongada de amostras, erro de escrita ou fila cheia continuam encerrando
+o teste e preservando os dados parciais. A regularização não autoriza treinar após
+saltos grandes e não corrige arquivos antigos. As amostras dos 5 s de assentamento
+antes dos cues são preservadas. Para diagnóstico técnico, `method: clocksync`
+desativa apenas dejitter/monotonize; os limites e a auditoria continuam ativos.
+
+No VS Code, use **BCI: verificar aquisição EEG (1 min)**, **(5 min)** ou **(10 min)**
+para conferir estabilidade antes de outro protocolo completo. Esses testes não
+exigem Unity nem modelo: gravam EEG e os marcadores de início/fim, mostram o sinal
+ao vivo e produzem o relatório. Não há treino ou estimativa de acurácia nesses
+testes, pois não contêm tentativas de classificação. A duração escolhida começa
+após a conexão e o assentamento, sem alterar os tempos do protocolo experimental.
+
 ## Contratos LSL
 
 | Stream | Formato e função |
@@ -232,6 +264,8 @@ python main.py --smoke
 python main.py --smoke --stage two_legs --output ~/BCI_Dados/teste_pipeline
 # Protocolo completo na interface, com tempos normais:
 python main.py --simulate
+# Recepção/gravação prolongada, com interface e equipamento selecionado na preparação:
+python main.py --check-acquisition --duration 600
 ```
 
 As versões verificadas em Python 3.12 estão em `requirements-lock.txt`, aplicado

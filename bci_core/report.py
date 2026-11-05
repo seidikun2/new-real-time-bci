@@ -28,6 +28,8 @@ def collection_info(cfg, signal_file):
     session = original.get('session_type', cfg.experiment.session_type)
     protocol = raw.get('protocol', {})
     label = session
+    if protocol.get('acquisition_test_s'):
+        label = f"Teste de aquisição · {protocol['acquisition_test_s']/60:g} min"
     if session == protocol.get('motor_session_type', 'EM_treino'):
         label = 'Execução motora'
     elif session == protocol.get('imagery_session_type', 'IM_treino'):

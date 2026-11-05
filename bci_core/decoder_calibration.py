@@ -76,6 +76,10 @@ def fit_final_model(Xw, y, pca_dim=2, svc_c=1., seed=42):
 
 def run_calibration(cfg, markers_file, signal_file):
     cfg = recording_config(cfg, signal_file)
+    if getattr(cfg, '_audit_only', False):
+        raise ValueError('Este CSV é a cópia de auditoria. Selecione o CSV de trabalho *_signal_*.csv.')
+    if getattr(cfg, '_timing_audit', {}).get('training_error'):
+        raise ValueError(cfg._timing_audit['training_error'])
     times, X, names = read_signal_csv(signal_file)
     tm, labels = read_markers_csv(markers_file, cfg.codes.code_map)
     if len(times) < 2:

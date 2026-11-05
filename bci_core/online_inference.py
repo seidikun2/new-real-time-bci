@@ -240,7 +240,7 @@ def run_realtime_decoder(cfg: AppConfig, mode: str = "online", model_prefix: Opt
                 continue
             if not np.isfinite(X).all():
                 raise ValueError("EEG contém NaN/Inf. Bloco interrompido; inspecione os canais.")
-            if not np.isfinite(ts).all() or np.any(np.diff(ts) <= 0):
+            if not np.isfinite(ts).all() or np.any(np.diff(ts) <= 0) or (previous_stamp is not None and ts[0] <= previous_stamp):
                 raise ValueError("Timestamps EEG inválidos durante inferência.")
             if (previous_stamp is not None and ts[0] - previous_stamp > max(.1, 1.5/fs)) or np.any(np.diff(ts) > max(.1, 1.5/fs)):
                 raise ValueError("Lacuna no EEG durante inferência. Inspecione aquisição antes de continuar.")

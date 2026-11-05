@@ -35,6 +35,48 @@
       "env": {
         "MPLBACKEND": "Agg"
       }
+    },
+    {
+      "name": "BCI: verificar aquisição EEG (1 min)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "args": [
+        "--check-acquisition",
+        "--duration",
+        "60"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "BCI: verificar aquisição EEG (5 min)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "args": [
+        "--check-acquisition",
+        "--duration",
+        "300"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "BCI: verificar aquisição EEG (10 min)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "args": [
+        "--check-acquisition",
+        "--duration",
+        "600"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true
     }
   ]
 }

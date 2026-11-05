@@ -48,7 +48,7 @@ def read_markers_csv(path, code_map):
 
 def read_signal_csv(path):
     frame = pd.read_csv(path)
-    channels = [str(c) for c in frame if c not in {'iso_time', 'lsl_time_s', 'local_recv_s'}]
+    channels = [str(c) for c in frame if c not in {'iso_time', 'lsl_time_s', 'local_recv_s', 'source_lsl_time_s', 'clock_correction_s'}]
     if not channels:
         raise ValueError('CSV sem canais ch1..chN.')
     return (pd.to_numeric(frame['lsl_time_s'], errors='coerce').to_numpy(float),

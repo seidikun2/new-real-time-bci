@@ -28,6 +28,7 @@ class PipelineTests(unittest.TestCase):
         set_source(self.cfg, 'simulator')
 
     def test_protocol_balanced_repeatable_and_timing(self):
+        self.cfg._raw_config['protocol']['trials_per_class'] = 15
         schedule = build_schedule(self.cfg)
         labels = [event.label for event in schedule]
         for label in ['LEFT_MI_STIM', 'RIGHT_MI_STIM', 'REST_STIM']:

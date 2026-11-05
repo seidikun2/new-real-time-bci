@@ -23,6 +23,21 @@ def inspect_quality(times, X, names, marker_times, labels, cfg):
     q = cfg._raw_config.get('quality', {})
     issues = []
     observations = list(getattr(cfg, '_stream_observations', []))
+    audit = getattr(cfg, '_timing_audit', {})
+    if audit.get('training_error'):
+        issues.append(audit['training_error'])
+    if audit:
+        summaries = []
+        for label, key in [('Publicador', 'source'), ('Sincronizado', 'clock_synced'), ('Trabalho', 'working')]:
+            if key in audit:
+                item = audit[key]
+                summaries.append(f"{label}: {item['backward_pairs']} recuos (até {item['largest_backward_s']*1000:.3f} ms)")
+        observations.append(f"Horários: {audit.get('method', 'não registrado')}. " + '; '.join(summaries) + '.')
+        observations.append(f"Maior pausa de recepção: {audit.get('max_receive_pause_s', 0):.3f} s; "
+                            f"maior atraso de gravação: {audit.get('max_write_lag_s', 0):.3f} s. "
+                            f"Arquivo de trabalho: {audit.get('received_samples', 0)} amostras recebidas, "
+                            f"{audit.get('written_samples', 0)} gravadas. "
+                            'A auditoria original usa um inlet independente, sem pareamento por índice.')
     simulated = source_name(cfg) == 'simulator'
     if simulated:
         observations.append('Sinal simulado: ruído branco e bursts sintéticos não reproduzem um EEG. Métricas espectrais são informativas, sem alertas fisiológicos.')
@@ -138,6 +153,7 @@ def inspect_quality(times, X, names, marker_times, labels, cfg):
                 issues.append(f'Canais idênticos: {names[j]} e {names[i]}.')
     report = dict(status='attention' if issues else 'ok', issues=list(dict.fromkeys(issues)),
                   timestamp_integrity=timing,
+                  timing_audit=audit,
                   estimated_fs_hz=estimated_fs, samples=len(times), gaps=gaps, estimated_missing_samples=missing,
                   marker_counts=dict(counts), channels=rows, unit=unit,
                   source=source_name(cfg), simulated=simulated, observations=observations,

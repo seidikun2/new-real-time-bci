@@ -16,7 +16,7 @@ matplotlib.use('Agg')  # Relatórios são gerados em background, sem janelas Mat
 
 from bci_core.config_models import load_config
 from bci_core.acquisition import source_name, recording_config, set_source
-from bci_core.protocol import MarkerPublisher, build_schedule, run_schedule
+from bci_core.protocol import MarkerPublisher, Event, build_schedule, run_schedule
 from bci_core.receive_data_log import BlockRecorder
 from bci_core.realtime_signal_transmit import run_transmission as simulate_signal
 from bci_core.input_hiamp import run_transmission as acquire_hiamp
@@ -128,9 +128,10 @@ def prepare_streams(cfg, mode):
         raise
 
 
-def run_block(cfg, mode='train', model_ref=None, block_index=0, operator=None):
+def run_block(cfg, mode='train', model_ref=None, block_index=0, operator=None, acquisition_duration=None):
     """Não inicia cues até EEG, logger e (no online) decoder/controle funcionarem."""
-    events = build_schedule(cfg, block_index)
+    events = (build_schedule(cfg, block_index) if acquisition_duration is None else
+              [Event('BASELINE', acquisition_duration), Event(cfg.protocol.block_end_label, 0.)])
     # Identidade efêmera vale apenas dentro de um bloco; o publicador pode reiniciar.
     cfg.__dict__.pop('_signal_uid', None)
     cfg.__dict__.pop('_signal_source_id', None)
@@ -143,6 +144,7 @@ def run_block(cfg, mode='train', model_ref=None, block_index=0, operator=None):
     p = cfg._raw_config['protocol']
     timeout = float(p.get('startup_timeout_s', 30.))
     next_preview = 0.
+    cues_started = False
     def worker(function, *args, **kwargs):
         try:
             function(*args, **kwargs)
@@ -175,6 +177,10 @@ def run_block(cfg, mode='train', model_ref=None, block_index=0, operator=None):
             raise TimeoutError('Aquisição EEG parou de enviar amostras.')
         if stop.is_set():
             raise RuntimeError('Bloco interrompido por um componente da pipeline.')
+        if cues_started and acquisition_duration is None:
+            error = recorder.timing_summary()['training_error']
+            if error:
+                raise ValueError(error)
     def wait(duration):
         deadline = time.monotonic() + duration
         while True:
@@ -206,8 +212,12 @@ def run_block(cfg, mode='train', model_ref=None, block_index=0, operator=None):
                 ready(control_ready, 'Controle Unity')
             if operator is None:
                 dashboard = start_dashboard(cfg, model_ref)
-        # Descoberta LSL do consumidor de marcadores e assentamento da aquisição.
-        wait(1.)
+        # Assentamento do pós-processamento antes dos estímulos, sem descartar amostras.
+        wait(recorder.timing_options['warmup_s'])
+        error = recorder.timing_summary()['training_error']
+        if acquisition_duration is None and error:
+            raise ValueError(error)
+        cues_started = True
         complete = run_schedule(events, publisher, recorder, wait, getattr(operator, 'set_event', None))
         wait(.2)
         reason = 'completed'
@@ -241,7 +251,8 @@ def run_block(cfg, mode='train', model_ref=None, block_index=0, operator=None):
                     'requested_at': recorder.requested_at, 'started_at': recorder.started_at,
                     'ended_at': recorder.ended_at, 'finished_at': datetime.now().astimezone().isoformat(timespec='milliseconds'),
                     'mode': mode,
-                    'samples': recorder.samples, 'stream': recorder.stream_metadata, 'config': {**cfg._raw_config, 'experiment': asdict(cfg.experiment)},
+                    'samples': recorder.samples, 'stream': recorder.stream_metadata, 'timing': recorder.timing_summary(),
+                    'config': {**cfg._raw_config, 'experiment': asdict(cfg.experiment)},
                     'effective_config': {key: value for key, value in asdict(cfg).items() if key != '_raw_config'},
                     'schedule': [event.__dict__ for event in events], 'block_index': block_index}
         recorder.save_metadata(metadata)
@@ -253,7 +264,9 @@ def analyze_block(cfg, block, operator=None):
     """Análise automática e não bloqueante para a condução; nenhum popup."""
     cfg = recording_config(cfg, block['signal_file'])
     pair = (block['markers_file'], block['signal_file'])
-    if block['complete']:
+    if cfg._raw_config.get('protocol', {}).get('acquisition_test_s'):
+        evaluation = {'error': 'Teste de aquisição: sem tentativas de classificação; treino não executado.'}
+    elif block['complete']:
         try:
             evaluation = run_calibration(cfg, *pair)['meta']
         except Exception as exc:
@@ -361,6 +374,18 @@ def run_simulation_check(cfg, output=None, stages=('single_target', 'two_legs'))
     return results
 
 
+def run_acquisition_check(cfg, operator, duration):
+    cfg = with_session(cfg, f'DIAGNOSTICO_{duration:g}s')
+    cfg._raw_config['protocol'].update(trials_per_class=0, acquisition_test_s=duration)
+    label = f'Teste de aquisição · {duration/60:g} min'
+    operator.set_protocol([label])
+    while not operator.closing and operator.prepare_block(cfg, label):
+        block = run_block(cfg, mode='diagnostic', operator=operator, acquisition_duration=duration)
+        qc, evaluation = operator.run_job('Verificando a aquisição', analyze_block, cfg, block)
+        if operator.review_block(label, block, qc, evaluation) != 'repeat':
+            return
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', default=str(PROJECT / 'config.yaml'))
@@ -368,7 +393,11 @@ def main():
     parser.add_argument('--simulate', action='store_true', help='Abrir o protocolo completo na interface em modo simulado.')
     parser.add_argument('--stage', choices=['single_target', 'two_legs', 'both'], help='Etapa; both é exclusivo de --smoke.')
     parser.add_argument('--output', help='Pasta dos dados fora do projeto.')
+    parser.add_argument('--check-acquisition', action='store_true', help='Teste de recepção e gravação, sem classificação.')
+    parser.add_argument('--duration', type=float, default=600., help='Duração do teste de aquisição em segundos (padrão: 600).')
     args = parser.parse_args()
+    if args.check_acquisition and (not 0 < args.duration <= 3600 or args.smoke):
+        parser.error('Use --check-acquisition com duração entre 0 e 3600 s, sem --smoke.')
     cfg = load_config(args.config)
     if args.smoke:
         stages = ('single_target', 'two_legs') if args.stage in {None, 'both'} else (args.stage,)
@@ -389,8 +418,12 @@ def main():
     from bci_core.operator import Operator
     operator = Operator()
     try:
-        if operator.configure(cfg):
-            run_experiment(cfg, operator)
+        configured = operator.configure(cfg, args.duration) if args.check_acquisition else operator.configure(cfg)
+        if configured:
+            if args.check_acquisition:
+                run_acquisition_check(cfg, operator, args.duration)
+            else:
+                run_experiment(cfg, operator)
     except Exception as exc:
         operator.notify(f'Experimento interrompido: {exc}')
         operator.finish('Confira a mensagem acima. Os dados já gravados foram preservados.')

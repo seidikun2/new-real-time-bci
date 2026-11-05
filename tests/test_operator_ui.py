@@ -119,3 +119,23 @@ class PersistentOperatorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'falha de análise'):
             self.op.run_job('Analisando', lambda: (_ for _ in ()).throw(ValueError('falha de análise')))
         self.assert_one_window()
+
+    def test_acquisition_check_has_no_model_or_stage_selection(self):
+        def prepare():
+            self.assertNotIn('stage', self.op.fields)
+            self.assertNotIn('target', self.op.fields)
+            self.op.fields['source'].set('Simulação')
+            self.op.action.set('prepare')
+        self.op.root.after(50, prepare)
+        self.assertTrue(self.op.configure(self.cfg, acquisition_duration=600.))
+        self.cfg._raw_config['protocol']['acquisition_test_s'] = 600.
+        self.op.root.after(50, lambda: self.op.action.set('start'))
+        self.assertTrue(self.op.prepare_block(self.cfg, 'Teste de aquisição · 10 min'))
+        self.op.begin_block()
+        self.assertIn('auditando', self.op.subtitle.get())
+        self.assert_one_window()
+        self.op.end_block()
+        self.op.root.after(50, lambda: self.op.action.set('next'))
+        self.assertEqual(self.op.review_block('Teste de aquisição', {'complete': True}, {'issues': []}, {}), 'next')
+        tabs = next(w for w in self.op.body.winfo_children() if w.winfo_class() == 'TNotebook')
+        self.assertEqual(len(tabs.tabs()), 1)

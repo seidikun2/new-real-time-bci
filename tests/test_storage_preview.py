@@ -70,12 +70,15 @@ class StorageAndPreviewTests(unittest.TestCase):
             times = local_clock()-6+np.arange(3000)/500
             inlet = Mock()
             inlet.info.return_value = eeg_info(32, 500, unit='V')
+            audit = Mock()
+            audit.time_correction.return_value = 0.
+            audit.pull_chunk.return_value = ([], [])
             def chunk(**kwargs):
                 stop.set()
                 return samples.tolist(), times.tolist()
             inlet.pull_chunk.side_effect = chunk
             try:
-                with patch('bci_core.receive_data_log.resolve_signal', return_value=inlet):
+                with patch('bci_core.receive_data_log.resolve_signal', side_effect=[inlet, audit]):
                     recorder.record(stop)
                 snapshot = recorder.snapshot()
                 self.assertEqual(snapshot['values'].shape, (2500, 2))

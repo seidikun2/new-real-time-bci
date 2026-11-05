@@ -102,14 +102,19 @@ class Operator:
         self.note.set(text)
         self.root.update_idletasks()
 
-    def configure(self, cfg):
+    def configure(self, cfg, acquisition_duration=None):
         self.cfg = cfg
         body = self.page('Preparar sessão', 'Preencha o participante e escolha a etapa. Os ajustes do equipamento ficam em Parâmetros.')
+        if acquisition_duration is not None:
+            self.title.set(f'Verificar aquisição · {acquisition_duration/60:g} min')
+            self.subtitle.set('Escolha a aquisição e a pasta dos dados. Este teste não exige Unity nem modelo.')
         self.fields = {}
         choices = {'stage': STAGES, 'target': {'left': 'Esquerda', 'right': 'Direita'}, 'source': SOURCES}
         items = [('Sujeito', 'subject', cfg.experiment.subject_id), ('Sessão', 'session', str(cfg.experiment.session_id)),
                  ('Etapa', 'stage', STAGES[cfg.protocol.stage]), ('Perna alvo', 'target', 'Esquerda' if cfg.protocol.online_target == 'left' else 'Direita'),
                  ('Aquisição', 'source', SOURCES[source_name(cfg)])]
+        if acquisition_duration is not None:
+            items = [item for item in items if item[1] not in {'stage', 'target'}]
         for i, (label, key, value) in enumerate(items):
             cell = self.ttk.Frame(body)
             cell.grid(row=i//2, column=i%2, sticky='ew', padx=(0, 20), pady=12)
@@ -119,7 +124,7 @@ class Operator:
             widget.pack(fill='x')
             self.fields[key] = variable
         folder = self.ttk.Frame(body)
-        folder.grid(row=3, column=0, columnspan=2, sticky='ew', pady=12)
+        folder.grid(row=(len(items)+1)//2, column=0, columnspan=2, sticky='ew', pady=12)
         self.ttk.Label(folder, text='Pasta dos dados · fora do projeto').pack(anchor='w', pady=(0, 6))
         data_root = self.tk.StringVar(value=str(Path(cfg.experiment.log_root).expanduser()))
         self.fields['data_root'] = data_root
@@ -140,8 +145,9 @@ class Operator:
                 set_source(cfg, source)
                 cfg.experiment.log_root = selected_root
                 cfg.experiment.subject_id, cfg.experiment.session_id = subject, session
-                cfg.protocol.stage = next(key for key, value in STAGES.items() if value == self.fields['stage'].get())
-                cfg.protocol.online_target = 'left' if self.fields['target'].get() == 'Esquerda' else 'right'
+                if 'stage' in self.fields:
+                    cfg.protocol.stage = next(key for key, value in STAGES.items() if value == self.fields['stage'].get())
+                    cfg.protocol.online_target = 'left' if self.fields['target'].get() == 'Esquerda' else 'right'
                 cfg.protocol.training_mode = 'target_vs_rest' if cfg.protocol.stage == 'single_target' else 'left_right_vs_rest'
                 cfg._raw_config['experiment'] = asdict(cfg.experiment)
                 cfg._raw_config['protocol'].update(stage=cfg.protocol.stage, online_target=cfg.protocol.online_target, training_mode=cfg.protocol.training_mode)
@@ -240,7 +246,10 @@ class Operator:
             current = self.protocol_labels.index(label)
             self.steps.set('  |  '.join(f'{i+1}. '+value+(' (atual)' if i == current else '') for i, value in enumerate(self.protocol_labels)))
         self.page(label, f'Sujeito {cfg.experiment.subject_id} · sessão {cfg.experiment.session_id} · {SOURCES[source_name(cfg)]}')
-        self.ttk.Label(self.body, text='Simulação completa: não precisa de Unity nem equipamento.' if source_name(cfg) == 'simulator' else 'Abra o Unity e prepare o participante. Inicie quando estiver pronto.', wraplength=920).pack(anchor='w', pady=18)
+        instruction = 'Simulação completa: não precisa de Unity nem equipamento.' if source_name(cfg) == 'simulator' else 'Abra o Unity e prepare o participante. Inicie quando estiver pronto.'
+        if cfg._raw_config.get('protocol', {}).get('acquisition_test_s'):
+            instruction = 'Teste de aquisição: sem classificação e sem Unity. Mantenha o transmissor EEG ligado.'
+        self.ttk.Label(self.body, text=instruction, wraplength=920).pack(anchor='w', pady=18)
         self.ttk.Label(self.body, text=f'Stream: {cfg.lsl.signal_name or "EEG disponível"}', style='Muted.TLabel').pack(anchor='w')
         self.ttk.Label(self.body, text=f'Dados em: {cfg.experiment.log_root}', style='Muted.TLabel').pack(anchor='w', pady=8)
         self.button('Iniciar bloco', 'start', True)
@@ -250,6 +259,8 @@ class Operator:
     def begin_block(self):
         label = getattr(self, 'block_label', self.title.get())
         self.page(label, 'Gravando EEG e enviando os estímulos para o Unity.')
+        if self.cfg._raw_config.get('protocol', {}).get('acquisition_test_s'):
+            self.subtitle.set('Gravando EEG e auditando os horários. Ao terminar, confira o relatório completo.')
         self.parameters.configure(state='disabled')
         self.cancelled = False
         self.status = self.tk.StringVar(value='Conectando à aquisição…')
@@ -386,8 +397,11 @@ class Operator:
         self.page(label + (' · concluído' if complete else ' · INTERROMPIDO'), 'Confira o resultado e escolha como continuar.')
         self.set_report(qc.get('report_path'), label)
         cv = evaluation.get('cv', {})
+        diagnostic = bool(self.cfg and self.cfg._raw_config.get('protocol', {}).get('acquisition_test_s'))
         accuracy = cv.get('acc_mean')
         text = f'Acurácia CV: {accuracy:.1%}' if accuracy is not None else 'Acurácia não estimada'
+        if diagnostic:
+            text = 'Diagnóstico de aquisição · sem treino de modelo'
         self.ttk.Label(self.body, text=text, style='Muted.TLabel').pack(anchor='w', pady=4)
         messages = []
         if not complete:
@@ -412,12 +426,13 @@ class Operator:
                 self.signal_preview.caption.set('Snapshot indisponível; consulte o relatório completo.')
         else:
             self.signal_preview.caption.set('Sem sinal suficiente para gerar um snapshot deste bloco.')
-        for title, filename in [('PCA', evaluation.get('pca_check_png')),
-                                ('Matriz de confusão', str(Path(self.report_path).with_name('confusion_matrix.png')) if self.report_path else None)]:
+        figures = [('PCA', evaluation.get('pca_check_png')),
+                   ('Matriz de confusão', str(Path(self.report_path).with_name('confusion_matrix.png')) if self.report_path else None)]
+        for title, filename in ([] if diagnostic else figures):
             tab = self.ttk.Frame(tabs)
             tabs.add(tab, text=title)
             self.add_image(tab, filename)
-        self.button('Próximo bloco', 'next', True)
+        self.button('Encerrar teste' if diagnostic else 'Próximo bloco', 'next', True)
         self.button('Repetir bloco', 'repeat')
         if self.model_ref:
             self.button('Trocar modelo', 'model')

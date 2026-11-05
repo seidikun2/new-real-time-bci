@@ -91,6 +91,18 @@ A interface também oferece **Outro stream LSL**, usando a mesma camada flexíve
 A seleção `select_channels` do processamento é aplicada **depois** da seleção de
 gravação; seus índices se referem aos canais efetivamente gravados.
 
+Para investigar timestamps, selecione no VS Code **BCI: verificar aquisição EEG
+(5 min)** ou **(10 min)**. O teste usa a mesma recepção e gravação do protocolo,
+com snapshot ao vivo, mas não exige Unity nem treina modelo. O relatório diferencia
+horários do publicador, horários com correção de relógio e horários regularizados
+pelo LSL, além de pausas de recepção e atrasos de escrita. A cópia `*_raw_eeg_*.csv`
+preserva o relógio original e todos os canais na escala do transmissor; ela usa
+outro inlet e não deve ser pareada por índice com o CSV de trabalho.
+
+O receptor não ignora grandes saltos para liberar o treino. Os limites estão em
+`acquisition_timing` no YAML e os motivos de recusa ficam no relatório. Valide na
+estação real se a taxa configurada no eego corresponde à taxa anunciada no LSL.
+
 ## Evidência de teste
 
 Foram verificados os perfis 64 canais/500 Hz e 32 canais/1000 Hz, seleção por nome

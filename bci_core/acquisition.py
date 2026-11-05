@@ -120,11 +120,13 @@ def recording_config(cfg, signal_file):
     result._recorded_channel_count = len(stream['recorded_channels'])
     result._recorded_unit = stream.get('unit', 'uV')
     result._stream_observations = stream.get('observations', [])
+    result._timing_audit = meta.get('timing', {})
+    result._audit_only = meta.get('audit_only', False)
     recorded = meta.get('config', {})
     effective = meta.get('effective_config', {})
     result.trial_duration_s = effective.get('trial_duration_s', recorded.get('trial_duration_s', result.trial_duration_s))
     original_protocol = recorded.get('protocol', {})
-    for key in ['trials_per_class', 'baseline_s', 'attention_s', 'cue_s', 'rest_s']:
+    for key in ['trials_per_class', 'baseline_s', 'attention_s', 'cue_s', 'rest_s', 'acquisition_test_s']:
         if key in original_protocol:
             result._raw_config.setdefault('protocol', {})[key] = original_protocol[key]
     return result
