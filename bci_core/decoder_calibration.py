@@ -76,10 +76,11 @@ def fit_final_model(Xw, y, pca_dim=2, svc_c=1., seed=42):
 
 def run_calibration(cfg, markers_file, signal_file):
     cfg = recording_config(cfg, signal_file)
+    audit = getattr(cfg, '_timing_audit', {})
     if getattr(cfg, '_audit_only', False):
         raise ValueError('Este CSV é a cópia de auditoria. Selecione o CSV de trabalho *_signal_*.csv.')
-    if getattr(cfg, '_timing_audit', {}).get('training_error'):
-        raise ValueError(cfg._timing_audit['training_error'])
+    if audit.get('training_error'):
+        raise ValueError(audit['training_error'])
     times, X, names = read_signal_csv(signal_file)
     tm, labels = read_markers_csv(markers_file, cfg.codes.code_map)
     if len(times) < 2:
@@ -128,6 +129,10 @@ def run_calibration(cfg, markers_file, signal_file):
         'online_target': cfg.protocol.online_target, 'session_type': source_config.get('experiment', {}).get('session_type', cfg.experiment.session_type),
         'channels_selected': selected, 'channel_indices': indices, 'fs_hz': fs,
         'signal_unit': getattr(cfg, '_recorded_unit', 'uV'),
+        'timing_warnings': list(audit.get('warnings', [])),
+        'warnings': list(audit.get('warnings', [])),
+        'timing_policy': {'method': audit.get('method'), 'validation_scope': audit.get('validation_scope'),
+                          'strict_raw_timestamps': audit.get('options', {}).get('strict_raw_timestamps')},
         'filter': {'band_hz': cfg.bp_band_hz, 'order': cfg.bp_order},
         'window_s': cfg.window_s, 'step_s': cfg.step_s, 'trial_duration_s': cfg.trial_duration_s,
         'classes_map': label_map, 'classes': details, 'cv': cv,

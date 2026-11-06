@@ -13,7 +13,7 @@ from bci_core.acquisition import set_source, recording_config
 from bci_core.config_models import load_config
 from bci_core.data import read_signal_csv
 from bci_core.decoder_calibration import run_calibration
-from bci_core.lsl_timing import timing_options, signal_processing_flags, TimestampAudit, TimingMonitor, audit_training_error
+from bci_core.lsl_timing import timing_options, signal_processing_flags, TimestampAudit, TimingMonitor, audit_training_error, audit_warnings
 from bci_core.receive_data_log import BlockRecorder
 from test_acquisition_report import eeg_info, ROOT
 
@@ -25,7 +25,7 @@ class LSLTimingTests(unittest.TestCase):
         self.addCleanup(self.folder.cleanup)
         self.cfg.experiment.log_root = self.folder.name
 
-    def test_regularization_is_external_only_and_large_discontinuities_remain_blocked(self):
+    def test_original_irregularities_warn_by_default_and_strict_mode_is_explicit(self):
         set_source(self.cfg, 'simulator')
         self.assertEqual(signal_processing_flags(self.cfg), proc_clocksync)
         set_source(self.cfg, 'eego')
@@ -36,7 +36,10 @@ class LSLTimingTests(unittest.TestCase):
         working.update([1., 1.002, 1.004, 1.006])
         self.assertIsNone(audit_training_error(source, synced, working, timing_options(self.cfg)))
         source.update([.7, .702])
-        self.assertIn('treino impedido', audit_training_error(source, synced, working, timing_options(self.cfg)))
+        options = timing_options(self.cfg)
+        self.assertIsNone(audit_training_error(source, synced, working, options))
+        self.assertTrue(audit_warnings(source, synced, options))
+        self.assertIn('treino impedido', audit_training_error(source, synced, working, {**options, 'strict_raw_timestamps': True}))
         self.assertEqual(source.summary()['backward_pairs'], 2)
         self.assertAlmostEqual(source.max_backward_s, .303)
         for audit in [source, synced]:
@@ -45,6 +48,55 @@ class LSLTimingTests(unittest.TestCase):
             audit.max_backward_s = 0
         working.max_abs_age_s = 1.
         self.assertIn('relógio', audit_training_error(source, synced, working, timing_options(self.cfg)))
+
+    def test_reported_54ms_source_reversal_does_not_abort_healthy_working_stream(self):
+        set_source(self.cfg, 'eego')
+        source, synced, working = (TimestampAudit() for _ in range(3))
+        for audit in [source, synced]:
+            audit.samples = 1752
+            audit.backwards = 14
+            audit.max_backward_s = .0538404
+            audit.max_gap_s = .061709
+        synced.observe_age(.103482359, 9.8394)
+        working.samples = 1752
+        working.max_gap_s = .0020533
+        working.observe_age(.09758693, 9.8348)
+        options = timing_options(self.cfg)
+        self.assertIsNone(audit_training_error(source, synced, working, options))
+        self.assertIn('53.84', audit_warnings(source, synced, options)[0])
+        self.assertIsNotNone(audit_training_error(source, synced, working, {**options, 'strict_raw_timestamps': True}))
+        synced.observe_age(.5, 10.)
+        self.assertIn('relógio', audit_training_error(source, synced, working, options))
+        synced.max_abs_age_s = .1
+        source.nonfinite = 1
+        self.assertIn('NaN/Inf', audit_training_error(source, synced, working, options))
+
+    def test_source_jitter_warning_does_not_reset_recent_stability(self):
+        set_source(self.cfg, 'eego')
+        monitor = TimingMonitor(timing_options(self.cfg))
+        for index in range(30):
+            now = 100.+index*.1
+            stamps = now-.02-np.arange(49, -1, -1)/500
+            monitor.observe('working', stamps, now, index*.1)
+            row = monitor.observe('raw', stamps+(.028 if index%2 else -.028), now, index*.1)
+        result = monitor.summary(now, 2.9)
+        self.assertTrue(result['current_health']['ready'])
+        self.assertIn('fonte com alertas', result['current_health']['reason'])
+        self.assertIsNone(result['training_error'])
+        self.assertTrue(result['warnings'])
+        self.assertEqual(row['batch_error'], '')
+
+    def test_source_warning_policy_keeps_working_stream_failures_blocking(self):
+        set_source(self.cfg, 'eego')
+        options = timing_options(self.cfg)
+        source, synced = TimestampAudit(), TimestampAudit()
+        for audit in [source, synced]:
+            audit.update([1., 1.002, .948, .950])
+        for stamps in [[1., np.nan], [1., 1.], [1., .999], [1., 1.101]]:
+            with self.subTest(stamps=stamps):
+                working = TimestampAudit()
+                working.update(stamps)
+                self.assertIsNotNone(audit_training_error(source, synced, working, options))
 
     def test_raw_copy_keeps_source_timestamps_and_clock_correction(self):
         set_source(self.cfg, 'eego', 500, 3)

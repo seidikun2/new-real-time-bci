@@ -79,8 +79,10 @@ def timing_report(audit, folder):
     error = audit.get('training_error')
     if error:
         verdict = 'Alinhamento ainda não validado: '+error
+    elif audit.get('warnings'):
+        verdict = 'Dados de trabalho dentro dos critérios operacionais, com alertas nos horários originais. Isso não comprova a temporização física do EEG; revise a fonte antes de interpretar a acurácia.'
     elif audit.get('active'):
-        verdict = 'Sem violação dos limites temporais durante o protocolo/teste. Os picos da acomodação permanecem registrados separadamente.'
+        verdict = 'Sem violação dos critérios operacionais durante o protocolo/teste. Os picos da acomodação permanecem registrados separadamente.'
     else:
         verdict = 'Consulte o escopo e a fase da coleta. Este registro não separa necessariamente a acomodação do protocolo.'
     return ('<section class="card"><div class="eyebrow">Diagnóstico temporal</div><h2>Sincronização e recepção</h2>'

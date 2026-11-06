@@ -99,8 +99,10 @@ pelo LSL, além de pausas de recepção e atrasos de escrita. A cópia `*_raw_ee
 preserva o relógio original e todos os canais na escala do transmissor; ela usa
 outro inlet e não deve ser pareada por índice com o CSV de trabalho.
 
-O receptor não ignora grandes saltos para liberar o treino. Os limites estão em
-`acquisition_timing` no YAML e os motivos de recusa ficam no relatório. Valide na
+O receptor mantém obrigatórios os critérios dos dados de trabalho e da referência
+de relógio. Recuos/lacunas originais são avisos por padrão, preservados no relatório
+e no modelo; `acquisition_timing.strict_raw_timestamps: true` também os torna
+bloqueantes. A regularização não comprova temporização física do EEG. Valide na
 estação real se a taxa configurada no eego corresponde à taxa anunciada no LSL.
 
 A aba **Sincronização** e os gráficos do relatório ajudam a distinguir atraso
@@ -109,6 +111,8 @@ e lentidão de escrita. Os máximos da acomodação inicial ficam separados do p
 com estímulos; o protocolo aguarda estabilidade recente antes de começar. Para
 investigar, envie `quality.json` e `timing_batches.csv` da pasta do relatório:
 esse CSV contém somente telemetria por lote e não os valores EEG.
+`batch_warning` registra os achados da fonte; `batch_error` registra falhas que
+impedem a operação segundo a política escolhida.
 
 ## Evidência de teste
 

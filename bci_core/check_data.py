@@ -26,6 +26,7 @@ def inspect_quality(times, X, names, marker_times, labels, cfg):
     audit = getattr(cfg, '_timing_audit', {})
     if audit.get('training_error'):
         issues.append(audit['training_error'])
+    issues.extend(audit.get('warnings', []))
     if audit:
         summaries = []
         for label, key in [('Publicador', 'source'), ('Sincronizado', 'clock_synced'), ('Trabalho', 'working')]:
@@ -187,6 +188,7 @@ def run_check_data(cfg, mode='train', markers_file=None, signal_file=None, save_
     report, clean, freq, psd, bad = inspect_quality(times, X, names, tm, labels, cfg)
     report['evaluation'] = evaluation
     report['issues'].extend((evaluation or {}).get('warnings', []))
+    report['issues'] = list(dict.fromkeys(report['issues']))
     if report['issues']:
         report['status'] = 'attention'
     report['collection'] = collection

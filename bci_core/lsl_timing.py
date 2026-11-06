@@ -14,7 +14,11 @@ def timing_options(cfg):
     method = options.get('method', 'dejitter') if external else 'clocksync'
     if method not in {'clocksync', 'dejitter'}:
         raise ValueError('acquisition_timing.method deve ser clocksync ou dejitter.')
+    strict_raw = options.get('strict_raw_timestamps', False)
+    if not isinstance(strict_raw, bool):
+        raise ValueError('strict_raw_timestamps deve ser true ou false.')
     result = dict(method=method, audit=external,
+                  strict_raw_timestamps=strict_raw,
                   max_backward_s=float(options.get('max_backward_s', .02)),
                   max_gap_s=float(options.get('max_gap_s', .1)),
                   max_age_s=float(options.get('max_age_s', .25)),
@@ -111,7 +115,7 @@ def audit_training_error(source, synced, working, options, require_source=True):
     for name, audit in [('originais do publicador', source), ('após sincronização de relógio', synced)]:
         if audit.nonfinite:
             return f'Horários {name} contêm NaN/Inf.'
-        if audit.max_backward_s > options['max_backward_s'] or audit.max_gap_s > options['max_gap_s']:
+        if options.get('strict_raw_timestamps', False) and (audit.max_backward_s > options['max_backward_s'] or audit.max_gap_s > options['max_gap_s']):
             return (f'Descontinuidade nos horários {name}: maior recuo {audit.max_backward_s:.3f} s, '
                     f'maior intervalo {audit.max_gap_s:.3f} s. '
                     'A regularização não valida o alinhamento; treino impedido.')
@@ -119,6 +123,18 @@ def audit_training_error(source, synced, working, options, require_source=True):
         detail = age_description(synced.peak_age()) if synced.peak_age() is not None else f'distante em {synced.max_abs_age_s:.3f} s'
         return f'EEG original sincronizado: amostra {detail} em relação ao relógio de recepção.'
     return None
+
+
+def audit_warnings(source, synced, options):
+    if not options['audit']:
+        return []
+    if not any(a.max_backward_s > options['max_backward_s'] or a.max_gap_s > options['max_gap_s'] for a in [source, synced]):
+        return []
+    policy = 'Bloqueio estrito da fonte ativado.' if options.get('strict_raw_timestamps', False) else 'Achado de auditoria; não interrompe por si só.'
+    return [(f'Auditoria temporal da fonte: publicador com recuo de até {source.max_backward_s*1000:.2f} ms '
+             f'e intervalo de até {source.max_gap_s*1000:.2f} ms; após clocksync, '
+             f'{synced.max_backward_s*1000:.2f} ms e {synced.max_gap_s*1000:.2f} ms. {policy} '
+             'Os horários de trabalho e a referência de relógio continuam sendo verificados. Revise a temporização da fonte.')]
 
 
 class TimingMonitor:
@@ -160,7 +176,8 @@ class TimingMonitor:
             return dict(stream=kind, phase=self.phase, elapsed_s=elapsed, received_lsl_s=received_lsl,
                         batch_samples=len(stamps), first_timestamp_s=float(stamps[0]), last_timestamp_s=float(stamps[-1]),
                         clock_correction_s=correction if kind == 'raw' else None,
-                        age_s=float(received_lsl-state['stamp']), batch_error=error or '')
+                        age_s=float(received_lsl-state['stamp']), batch_error=error or '',
+                        batch_warning='; '.join(audit_warnings(batch['source'], batch['clock_synced'], options)))
 
     def current_health(self, now_lsl, elapsed):
         with self.lock:
@@ -181,8 +198,11 @@ class TimingMonitor:
                 durations.append(max(0., elapsed-state['since']))
             stable = min(durations)
             ready = stable >= self.options['stable_s']
+            selected = self.active if self.active is not None else self.audits
+            warnings = audit_warnings(selected['source'], selected['clock_synced'], self.options)
+            message = 'Fluxo de trabalho estável; fonte com alertas temporais.' if warnings else 'Horários de trabalho estáveis.'
             return dict(ready=ready, stable_for_s=stable,
-                        reason='Horários estáveis.' if ready else f"Estabilizando: {stable:.1f} de {self.options['stable_s']:g} s.")
+                        reason=message if ready else f"Estabilizando: {stable:.1f} de {self.options['stable_s']:g} s.")
 
     def begin(self, diagnostic=False):
         with self.lock:
@@ -210,4 +230,5 @@ class TimingMonitor:
                         capture_ended_s=self.finished[1] if self.finished is not None else None,
                         validation_scope=self.phase if self.active is not None else 'warmup',
                         active=summaries(self.active) if self.active is not None else {},
-                        current_health=health, training_error=error)
+                        current_health=health, training_error=error,
+                        warnings=audit_warnings(selected['source'], selected['clock_synced'], self.options))

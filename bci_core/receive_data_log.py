@@ -130,7 +130,7 @@ class BlockRecorder:
         last_received = {}
         trace_fields = ['stream', 'phase', 'elapsed_s', 'received_lsl_s', 'received_unix_s', 'batch_samples',
                         'first_timestamp_s', 'last_timestamp_s', 'clock_correction_s', 'age_s',
-                        'batch_error', 'receive_gap_s', 'queue_batches', 'write_lag_s']
+                        'batch_error', 'batch_warning', 'receive_gap_s', 'queue_batches', 'write_lag_s']
         try:
             info = inlet.info()
             indices, factors, self.stream_metadata = stream_layout(self.cfg, info)

@@ -176,13 +176,24 @@ sem confundir uma escrita lenta com ausência de EEG. O JSON e o relatório sepa
 pausas de recepção, atraso de gravação, amostras recebidas/gravadas e recuos nos
 horários originais, sincronizados e de trabalho.
 
-Os limites em `acquisition_timing` são verificações temporais: por padrão, recuos
-originais acima de 20 ms, intervalos acima de 100 ms e distância da última amostra
-ao relógio de recepção acima de 250 ms impedem o treino. Durante o protocolo também
-interrompem o bloco; no teste de aquisição são diagnosticados sem encerrar a coleta.
+Os limites em `acquisition_timing` separam operação e auditoria. Timestamps de
+trabalho não finitos, duplicados ou em recuo, intervalos de trabalho acima de
+100 ms e distância ao relógio de recepção acima de 250 ms impedem o treino.
+Horários originais não finitos ou referência original sincronizada distante
+mais de 250 ms também impedem. Durante o protocolo, essas falhas interrompem
+o bloco; no teste de aquisição são diagnosticadas sem encerrar a coleta.
+
+Recuos originais acima de 20 ms e intervalos originais acima de 100 ms são
+**avisos de auditoria por padrão**, quando o fluxo regularizado e a referência
+de relógio permanecem dentro dos critérios operacionais. Usar dejitter e ao mesmo
+tempo vetar todo jitter original impedia conduzir blocos com o fluxo de trabalho
+saudável. Os avisos continuam no relatório e nos metadados do modelo, inclusive
+ao selecioná-lo. Eles não comprovam temporização física válida para interpretar
+acurácia. `strict_raw_timestamps: true` restaura o veto também por esses achados
+originais. Nenhum limite do fluxo de trabalho é relaxado por essa opção.
 Ausência prolongada de amostras, erro de escrita ou fila cheia continuam encerrando
-o teste e preservando os dados parciais. A regularização não autoriza treinar após
-saltos grandes e não corrige arquivos antigos. As amostras dos 5 s de assentamento
+o teste e preservando os dados parciais. Essa política não corrige arquivos
+antigos nem completa tentativas que não foram coletadas. As amostras dos 5 s de assentamento
 antes dos cues são preservadas. Após esse período, o protocolo espera pelo menos
 `stable_s: 2` segundos recentes dentro dos limites, até o timeout de inicialização.
 Picos ocorridos apenas na acomodação continuam visíveis, mas não ficam como um
