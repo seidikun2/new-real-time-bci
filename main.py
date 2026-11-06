@@ -168,6 +168,9 @@ def run_block(cfg, mode='train', model_ref=None, block_index=0, operator=None, a
             snapshot = recorder.snapshot()
             if snapshot is not None:
                 preview(snapshot)
+            timing_preview = getattr(operator, 'update_timing_preview', None)
+            if timing_preview:
+                timing_preview(recorder.timing_preview())
             next_preview = time.monotonic()+1.
         try:
             raise errors.get_nowait()
@@ -214,9 +217,16 @@ def run_block(cfg, mode='train', model_ref=None, block_index=0, operator=None, a
                 dashboard = start_dashboard(cfg, model_ref)
         # Assentamento do pós-processamento antes dos estímulos, sem descartar amostras.
         wait(recorder.timing_options['warmup_s'])
-        error = recorder.timing_summary()['training_error']
-        if acquisition_duration is None and error:
-            raise ValueError(error)
+        if acquisition_duration is None:
+            deadline = time.monotonic()+timeout
+            while not recorder.timing_health()['ready']:
+                health = recorder.timing_health()
+                if operator:
+                    operator.set_event(health['reason'])
+                if time.monotonic() >= deadline:
+                    raise ValueError('Horários não estabilizaram antes dos estímulos. ' + health['reason'])
+                wait(.1)
+        recorder.begin_protocol(diagnostic=acquisition_duration is not None)
         cues_started = True
         complete = run_schedule(events, publisher, recorder, wait, getattr(operator, 'set_event', None))
         wait(.2)

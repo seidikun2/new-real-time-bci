@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .acquisition import stream_layout
 from .storage import external_path
-from .lsl_timing import timing_options, signal_processing_flags, TimestampAudit, audit_training_error
+from .lsl_timing import timing_options, signal_processing_flags, TimingMonitor
 
 from pylsl import StreamInlet, local_clock, resolve_byprop
 
@@ -61,6 +61,7 @@ class BlockRecorder:
         self.marker_path = folder / f'{base}_markers_{self.run_id}.csv'
         self.signal_path = folder / f'{base}_signal_{self.run_id}.csv'
         self.raw_path = folder / f'{base}_raw_eeg_{self.run_id}.csv'
+        self.timing_path = folder / f'{base}_timing_{self.run_id}.csv'
         self.cfg = cfg
         self.ready = threading.Event()
         self.last_sample_at = None
@@ -70,7 +71,11 @@ class BlockRecorder:
         self.max_receive_pause_s = self.max_write_lag_s = 0.
         self.max_queue_batches = self.unwritten_samples = 0
         self.timing_options = timing_options(cfg)
-        self.source_audit, self.synced_audit, self.working_audit = (TimestampAudit() for _ in range(3))
+        self.timing = TimingMonitor(self.timing_options)
+        self.source_audit = self.timing.audits['source']
+        self.synced_audit = self.timing.audits['clock_synced']
+        self.working_audit = self.timing.audits['working']
+        self.timing_history = deque(maxlen=2000)
         self.preview_lock = threading.Lock()
         self.preview_values = deque()
         self.preview_times = deque()
@@ -122,6 +127,10 @@ class BlockRecorder:
         batches = Queue(maxsize=self.timing_options['queue_batches'])
         errors = []
         reader = None
+        last_received = {}
+        trace_fields = ['stream', 'phase', 'elapsed_s', 'received_lsl_s', 'received_unix_s', 'batch_samples',
+                        'first_timestamp_s', 'last_timestamp_s', 'clock_correction_s', 'age_s',
+                        'batch_error', 'receive_gap_s', 'queue_batches', 'write_lag_s']
         try:
             info = inlet.info()
             indices, factors, self.stream_metadata = stream_layout(self.cfg, info)
@@ -147,21 +156,21 @@ class BlockRecorder:
                             if not stamps:
                                 continue
                             received = time.monotonic()
+                            received_lsl = local_clock()
                             unix = time.time()
                             correction = float(current.time_correction(timeout=0.)) if kind == 'raw' else 0.
+                            row = self.timing.observe(kind, stamps, received_lsl, received-self.timing.origin, correction)
+                            row.update(received_unix_s=unix,
+                                       receive_gap_s=received-last_received[kind] if kind in last_received else None,
+                                       queue_batches=batches.qsize(), write_lag_s=None)
+                            last_received[kind] = received
+                            with self.timing.lock:
+                                self.timing_history.append(row)
                             if kind == 'working':
                                 if self.last_sample_at is not None:
                                     self.max_receive_pause_s = max(self.max_receive_pause_s, received-self.last_sample_at)
                                 self.last_sample_at = received  # Recepção, antes de qualquer escrita em disco.
                                 self.received_samples += len(stamps)
-                                self.working_audit.update(stamps)
-                                if np.isfinite(stamps[-1]):
-                                    self.working_audit.max_abs_age_s = max(self.working_audit.max_abs_age_s, abs(local_clock()-stamps[-1]))
-                            else:
-                                self.source_audit.update(stamps)
-                                self.synced_audit.update(np.asarray(stamps)+correction)
-                                if np.isfinite(stamps[-1]):
-                                    self.synced_audit.max_abs_age_s = max(self.synced_audit.max_abs_age_s, abs(local_clock()-stamps[-1]-correction))
                             converted = np.asarray(values, float)
                             if kind == 'working':
                                 converted = converted[:, indices] * factors
@@ -170,7 +179,7 @@ class BlockRecorder:
                                     self.preview_values.extend(converted)
                                     self.preview_times.extend(stamps)
                             try:
-                                batches.put((kind, converted, stamps, unix, received, correction), timeout=.1)
+                                batches.put((kind, converted, stamps, unix, received, correction, row), timeout=.1)
                             except Full:
                                 self.unwritten_samples += len(stamps)
                                 raise RuntimeError(f'Fila de gravação cheia: {len(stamps)} amostras deste lote não foram gravadas.')
@@ -178,6 +187,7 @@ class BlockRecorder:
                 except Exception as exc:
                     errors.append(exc)
                 finally:
+                    self.timing.finish(local_clock(), time.monotonic()-self.timing.origin)
                     done.set()
 
             with ExitStack() as files:
@@ -185,6 +195,10 @@ class BlockRecorder:
                 if raw_inlet is not None:
                     streams['raw'] = files.enter_context(self.raw_path.open('x', newline='', encoding='utf-8'))
                 writers = {kind: csv.writer(stream) for kind, stream in streams.items()}
+                timing_stream = files.enter_context(self.timing_path.open('x', newline='', encoding='utf-8'))
+                timing_writer = csv.DictWriter(timing_stream, fieldnames=trace_fields)
+                timing_writer.writeheader()
+                timing_stream.flush()
                 for kind, writer in writers.items():
                     extra = ['source_lsl_time_s', 'clock_correction_s'] if kind == 'raw' else []
                     names = self.stream_metadata['source_channel_names'] if kind == 'raw' else self.stream_metadata['recorded_channels']
@@ -194,7 +208,7 @@ class BlockRecorder:
                 reader.start()
                 while not done.is_set() or not batches.empty():
                     try:
-                        kind, values, stamps, unix, received, correction = batches.get(timeout=.1)
+                        kind, values, stamps, unix, received, correction, row = batches.get(timeout=.1)
                     except Empty:
                         continue
                     for sample, source_stamp in zip(values, stamps):
@@ -204,6 +218,10 @@ class BlockRecorder:
                         writers[kind].writerow([iso, f'{stamp:.17g}', unix, *extra, *sample])
                     streams[kind].flush()
                     self.max_write_lag_s = max(self.max_write_lag_s, time.monotonic()-received)
+                    with self.timing.lock:
+                        row['write_lag_s'] = time.monotonic()-received
+                    timing_writer.writerow(row)
+                    timing_stream.flush()
                     if kind == 'working':
                         if self.started_at is None and np.isfinite(stamps[0]):
                             self.started_at = datetime.fromtimestamp(stamps[0]+self.offset).astimezone().isoformat(timespec='milliseconds')
@@ -228,13 +246,23 @@ class BlockRecorder:
         return dict(method=self.timing_options['method'], options=self.timing_options,
                     raw_file=str(self.raw_path.resolve()) if self.timing_options['audit'] else None,
                     audit_note='Inlet independente: índices e contagens não são pareados aos do arquivo de trabalho.',
-                    source=self.source_audit.summary(), clock_synced=self.synced_audit.summary(include_age=True),
-                    working=self.working_audit.summary(include_age=True), received_samples=self.received_samples,
+                    **self.timing.summary(local_clock(), time.monotonic()-self.timing.origin),
+                    trace_file=str(self.timing_path.resolve()), received_samples=self.received_samples,
                     written_samples=self.samples, unwritten_samples=self.unwritten_samples,
                     max_receive_pause_s=self.max_receive_pause_s, max_write_lag_s=self.max_write_lag_s,
-                    max_queue_batches=self.max_queue_batches,
-                    training_error=audit_training_error(self.source_audit, self.synced_audit,
-                                                        self.working_audit, self.timing_options))
+                    max_queue_batches=self.max_queue_batches)
+
+    def timing_health(self):
+        return self.timing.current_health(local_clock(), time.monotonic()-self.timing.origin)
+
+    def begin_protocol(self, diagnostic=False):
+        self.timing.begin(diagnostic)
+
+    def timing_preview(self):
+        with self.timing.lock:
+            return dict(rows=[row.copy() for row in self.timing_history], options=self.timing_options,
+                        health=self.timing_health(), phase=self.timing.phase, protocol_started_s=self.timing.protocol_started_s,
+                        elapsed_s=self.timing.finished[1] if self.timing.finished is not None else time.monotonic()-self.timing.origin)
 
     def snapshot(self):
         with self.preview_lock:

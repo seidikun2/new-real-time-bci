@@ -183,7 +183,11 @@ interrompem o bloco; no teste de aquisição são diagnosticados sem encerrar a 
 Ausência prolongada de amostras, erro de escrita ou fila cheia continuam encerrando
 o teste e preservando os dados parciais. A regularização não autoriza treinar após
 saltos grandes e não corrige arquivos antigos. As amostras dos 5 s de assentamento
-antes dos cues são preservadas. Para diagnóstico técnico, `method: clocksync`
+antes dos cues são preservadas. Após esse período, o protocolo espera pelo menos
+`stable_s: 2` segundos recentes dentro dos limites, até o timeout de inicialização.
+Picos ocorridos apenas na acomodação continuam visíveis, mas não ficam como um
+veto permanente depois de estabilizar. A validação durante o protocolo é separada
+e permanece estrita. Para diagnóstico técnico, `method: clocksync`
 desativa apenas dejitter/monotonize; os limites e a auditoria continuam ativos.
 
 No VS Code, use **BCI: verificar aquisição EEG (1 min)**, **(5 min)** ou **(10 min)**
@@ -192,6 +196,21 @@ exigem Unity nem modelo: gravam EEG e os marcadores de início/fim, mostram o si
 ao vivo e produzem o relatório. Não há treino ou estimativa de acurácia nesses
 testes, pois não contêm tentativas de classificação. A duração escolhida começa
 após a conexão e o assentamento, sem alterar os tempos do protocolo experimental.
+
+A aba **Sincronização** mostra ao vivo o desvio da última amostra de cada lote:
+positivo significa amostra atrasada; negativo significa horário no futuro.
+O fundo cinza identifica a acomodação inicial e as linhas vermelhas mostram o
+limite configurado. O relatório separa os máximos desde a preparação dos máximos
+durante o protocolo/teste e inclui gráficos do desvio, das pausas de recepção,
+do tempo até gravar, da variação da correção de relógio e da fila.
+
+O arquivo `*_timing_*.csv` registra um ponto por lote recebido, sem EEG. Ele guarda
+fase, tempo desde a preparação, relógio local LSL na recepção, timestamps do lote,
+correção de relógio do inlet de auditoria, desvio assinado, pausa entre lotes,
+fila observada e tempo entre receber e gravar. Uma cópia `timing_batches.csv` fica
+junto do relatório e pode ser enviada com o `quality.json` para diagnóstico,
+sem reenviar todos os sinais. Os inlets continuam independentes: as curvas não
+representam uma correção de dejitter medida amostra a amostra.
 
 ## Contratos LSL
 

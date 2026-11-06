@@ -33,6 +33,8 @@ def inspect_quality(times, X, names, marker_times, labels, cfg):
                 item = audit[key]
                 summaries.append(f"{label}: {item['backward_pairs']} recuos (até {item['largest_backward_s']*1000:.3f} ms)")
         observations.append(f"Horários: {audit.get('method', 'não registrado')}. " + '; '.join(summaries) + '.')
+        if audit.get('active'):
+            observations.append('Os máximos desde o início incluem a acomodação. A decisão temporal do treino considera o período do protocolo/teste, mostrado separadamente abaixo.')
         observations.append(f"Maior pausa de recepção: {audit.get('max_receive_pause_s', 0):.3f} s; "
                             f"maior atraso de gravação: {audit.get('max_write_lag_s', 0):.3f} s. "
                             f"Arquivo de trabalho: {audit.get('received_samples', 0)} amostras recebidas, "

@@ -138,4 +138,8 @@ class PersistentOperatorTests(unittest.TestCase):
         self.op.root.after(50, lambda: self.op.action.set('next'))
         self.assertEqual(self.op.review_block('Teste de aquisição', {'complete': True}, {'issues': []}, {}), 'next')
         tabs = next(w for w in self.op.body.winfo_children() if w.winfo_class() == 'TNotebook')
-        self.assertEqual(len(tabs.tabs()), 1)
+        self.assertEqual([tabs.tab(tab, 'text') for tab in tabs.tabs()], ['Snapshot do sinal', 'Sincronização'])
+        self.op.update_timing_preview({'rows': [{'stream':'working','age_s':-.5,'elapsed_s':3.,'write_lag_s':.01,'queue_batches':0}],
+                                       'options':{'max_age_s':.25}, 'phase':'diagnostic', 'health':{'reason':'Teste temporal'}})
+        self.assertIn('no futuro', self.op.timing_preview.metrics.get())
+        self.assert_one_window()

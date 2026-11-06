@@ -103,6 +103,13 @@ O receptor não ignora grandes saltos para liberar o treino. Os limites estão e
 `acquisition_timing` no YAML e os motivos de recusa ficam no relatório. Valide na
 estação real se a taxa configurada no eego corresponde à taxa anunciada no LSL.
 
+A aba **Sincronização** e os gráficos do relatório ajudam a distinguir atraso
+(desvio positivo), horário no futuro (negativo), mudanças na correção de relógio
+e lentidão de escrita. Os máximos da acomodação inicial ficam separados do período
+com estímulos; o protocolo aguarda estabilidade recente antes de começar. Para
+investigar, envie `quality.json` e `timing_batches.csv` da pasta do relatório:
+esse CSV contém somente telemetria por lote e não os valores EEG.
+
 ## Evidência de teste
 
 Foram verificados os perfis 64 canais/500 Hz e 32 canais/1000 Hz, seleção por nome

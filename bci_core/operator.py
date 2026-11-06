@@ -11,6 +11,7 @@ from queue import Queue, Empty
 from .acquisition import SOURCES, source_name, set_source, discover_signals
 from .storage import prepare_data_root
 from .signal_preview import SignalPreview
+from .timing_preview import TimingPreview
 
 STAGES = {'single_target': 'Etapa 1 · alvo e repouso', 'two_legs': 'Etapa 2 · duas pernas e repouso'}
 PHASES = {'auto': 'Protocolo completo', 'execution': 'Execução motora', 'imagery': 'Imagética motora', 'online': 'Online'}
@@ -60,6 +61,7 @@ class Operator:
         ttk.Label(self.shell, textvariable=self.note, wraplength=970).pack(anchor='w', pady=(0, 10))
         self.report_link = ttk.Button(self.shell, text='Abrir relatório completo', style='Link.TButton', cursor='hand2', command=self.open_report)
         self.signal_preview = None
+        self.timing_preview = None
         self.buttons = ttk.Frame(self.shell)
         self.buttons.pack(side='bottom', fill='x', pady=(14, 0))
         self.body = ttk.Frame(self.shell)
@@ -84,6 +86,7 @@ class Operator:
             for widget in container.winfo_children():
                 widget.destroy()
         self.signal_preview = None
+        self.timing_preview = None
         self.parameters.configure(state='normal')
         return self.body
 
@@ -276,6 +279,11 @@ class Operator:
         signal_tab = self.ttk.Frame(self.preview_tabs)
         self.preview_tabs.add(signal_tab, text='Snapshot do sinal')
         self.signal_preview = SignalPreview(signal_tab)
+        timing_tab = self.ttk.Frame(self.preview_tabs)
+        self.preview_tabs.add(timing_tab, text='Sincronização')
+        self.timing_preview = TimingPreview(timing_tab)
+        if self.cfg._raw_config.get('protocol', {}).get('acquisition_test_s'):
+            self.preview_tabs.select(timing_tab)
         self.live_canvas = None
         self.last_resolve = 0.
         if self.model_ref and self.cfg._raw_config.get('debug_plot', {}).get('enabled', True):
@@ -331,6 +339,13 @@ class Operator:
                 self.signal_preview.update(snapshot)
             except (ValueError, IndexError, self.tk.TclError):
                 self.signal_preview.caption.set('Snapshot indisponível. A gravação continua; confira o relatório.')
+
+    def update_timing_preview(self, data):
+        if self.timing_preview is not None:
+            try:
+                self.timing_preview.update(data)
+            except (ValueError, TypeError, KeyError, self.tk.TclError):
+                self.timing_preview.status.set('Visualização temporal indisponível; a gravação continua. Consulte o relatório.')
 
     def resize_live_pca(self):
         from PIL import Image, ImageTk
@@ -432,6 +447,22 @@ class Operator:
             tab = self.ttk.Frame(tabs)
             tabs.add(tab, text=title)
             self.add_image(tab, filename)
+        audit = qc.get('timing_audit', {})
+        if diagnostic or audit:
+            timing_tab = self.ttk.Frame(tabs)
+            tabs.add(timing_tab, text='Sincronização')
+            self.timing_preview = TimingPreview(timing_tab)
+            rows = []
+            trace = audit.get('trace_file')
+            if trace and Path(trace).is_file():
+                import pandas as pd
+                rows = pd.read_csv(trace).tail(2000).astype(object).where(lambda f: f.notna(), None).to_dict('records')
+            self.update_timing_preview(dict(rows=rows, options=audit.get('options', {'max_age_s':.25}),
+                                            phase=audit.get('phase', 'diagnostic'), protocol_started_s=audit.get('protocol_started_s'),
+                                            elapsed_s=audit.get('capture_ended_s'),
+                                            health=audit.get('current_health', {'reason':'Sem série temporal neste registro.'})))
+            if diagnostic:
+                tabs.select(timing_tab)
         self.button('Encerrar teste' if diagnostic else 'Próximo bloco', 'next', True)
         self.button('Repetir bloco', 'repeat')
         if self.model_ref:

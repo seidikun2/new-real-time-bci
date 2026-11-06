@@ -13,7 +13,7 @@ from bci_core.acquisition import set_source, recording_config
 from bci_core.config_models import load_config
 from bci_core.data import read_signal_csv
 from bci_core.decoder_calibration import run_calibration
-from bci_core.lsl_timing import timing_options, signal_processing_flags, TimestampAudit, audit_training_error
+from bci_core.lsl_timing import timing_options, signal_processing_flags, TimestampAudit, TimingMonitor, audit_training_error
 from bci_core.receive_data_log import BlockRecorder
 from test_acquisition_report import eeg_info, ROOT
 
@@ -121,8 +121,10 @@ class LSLTimingTests(unittest.TestCase):
                     return [[1., 2.]]*10, times
                 inlet.pull_chunk.side_effect = chunk
                 real_writer = csv.writer
-                def slow_writer(stream):
-                    writer = real_writer(stream)
+                def slow_writer(stream, *args, **kwargs):
+                    writer = real_writer(stream, *args, **kwargs)
+                    if Path(stream.name) != recorder.signal_path:
+                        return writer
                     def row(values):
                         if values[0] != 'iso_time':
                             disk_started.set()
@@ -174,3 +176,58 @@ class LSLTimingTests(unittest.TestCase):
         self.assertIn('training_error', restored._timing_audit)
         with self.assertRaisesRegex(ValueError, 'Descontinuidade original'):
             run_calibration(self.cfg, str(recorder.marker_path), str(recorder.signal_path))
+
+    def test_cold_start_peak_does_not_block_stable_protocol_but_later_failures_do(self):
+        set_source(self.cfg, 'eego')
+        monitor = TimingMonitor(timing_options(self.cfg))
+        for kind in ['working', 'raw']:
+            monitor.observe(kind, [100., 100.002], 101.055, 0.)
+        for index in range(1, 41):
+            now = 101.055+index*.1
+            stamps = now-.02-np.arange(49, -1, -1)/500
+            for kind in ['working', 'raw']:
+                monitor.observe(kind, stamps, now, index*.1)
+        self.assertTrue(monitor.current_health(now, 4.)['ready'])
+        self.assertAlmostEqual(monitor.audits['working'].max_abs_age_s, 1.053)
+        monitor.begin()
+        now += .1
+        stamps = now-.02-np.arange(49, -1, -1)/500
+        for kind in ['working', 'raw']:
+            monitor.observe(kind, stamps, now, 4.1)
+        result = monitor.summary(now, 4.1)
+        self.assertIsNone(result['training_error'])
+        self.assertAlmostEqual(result['active']['working']['max_abs_age_s'], .02)
+        # Depois do início, atraso real continua sendo uma falha, sem reiniciar o histórico.
+        monitor.observe('working', stamps+.1, now+1., 5.1)
+        self.assertIn('atrasada', monitor.summary(now+1., 5.1)['training_error'])
+
+    def test_future_timestamp_direction_and_stale_stream_are_visible(self):
+        set_source(self.cfg, 'simulator')
+        monitor = TimingMonitor(timing_options(self.cfg))
+        monitor.observe('working', [100., 100.002], 99., 0.)
+        result = monitor.summary(99., 0.)
+        self.assertIn('adiantada', result['training_error'])
+        self.assertAlmostEqual(result['working']['min_age_s'], -1.002)
+        monitor.observe('working', [100.004, 100.006], 100.026, 1.)
+        self.assertTrue(monitor.current_health(100.026, 1.)['ready'])
+        self.assertFalse(monitor.current_health(101., 2.)['ready'])
+        self.assertIn('atrasada',monitor.current_health(101.1,2.1)['reason'])
+
+    def test_resuming_after_a_pause_requires_a_new_stable_interval(self):
+        set_source(self.cfg, 'simulator')
+        monitor = TimingMonitor({**timing_options(self.cfg), 'stable_s':.5})
+        last = 100.
+        elapsed = 0.
+        for _ in range(7):
+            stamps=last+np.arange(1,51)/500
+            last=stamps[-1]
+            monitor.observe('working',stamps,last+.02,elapsed)
+            elapsed+=.1
+        self.assertTrue(monitor.current_health(last+.02,elapsed-.1)['ready'])
+        self.assertFalse(monitor.current_health(last+.4,elapsed+.3)['ready'])
+        # O lote represado tem timestamps contínuos, mas a recepção ficou parada.
+        stamps=last+np.arange(1,201)/500
+        monitor.observe('working',stamps,stamps[-1]+.02,elapsed+.3)
+        health=monitor.current_health(stamps[-1]+.02,elapsed+.3)
+        self.assertFalse(health['ready'])
+        self.assertEqual(health['stable_for_s'],0.)

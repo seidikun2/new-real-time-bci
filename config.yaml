@@ -87,6 +87,7 @@ protocol:
 acquisition_timing:
   method: dejitter        # dejitter = clocksync + dejitter + monotonize; clocksync = apenas relógio
   warmup_s: 5.0          # antes dos estímulos; as amostras são preservadas
+  stable_s: 2.0          # estabilidade recente exigida antes dos estímulos, após o warmup
   max_backward_s: 0.02   # maior recuo tolerado nos horários originais/sincronizados
   max_gap_s: 0.10        # maior intervalo entre timestamps tolerado
   max_age_s: 0.25        # distância máxima entre última amostra recebida e relógio local

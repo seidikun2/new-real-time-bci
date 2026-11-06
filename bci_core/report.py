@@ -13,6 +13,7 @@ from sklearn.metrics import ConfusionMatrixDisplay
 
 from .class_schema import display_name
 from .acquisition import SOURCES
+from .timing_report import timing_report
 
 
 def collection_info(cfg, signal_file):
@@ -146,6 +147,7 @@ def write_report(cfg, report, evaluation, signal_file, folder):
         request_note = 'Tentativa de coleta iniciada em ' + display_time(collection['requested_at']) + '. '
         request_note += 'Nenhuma amostra EEG foi recebida.' if report['samples'] == 0 else 'Horário das amostras não registrado.'
     fields = {
+        'timing': timing_report(report.get('timing_audit', {}), folder),
         'session': escape(collection['block_type']), 'block_label': escape(collection['block_label']),
         'subject': escape(collection['subject']), 'session_id': escape(collection['session_id']),
         'source': escape(SOURCES.get(collection.get('source') or report.get('source'), 'EEG')),
@@ -160,6 +162,7 @@ def write_report(cfg, report, evaluation, signal_file, folder):
         'channel_count': str(len(report['channels'])), 'accuracy': metric(cv.get('acc_mean')),
         'balanced': metric(cv.get('balanced_accuracy')), 'trial_accuracy': metric(cv.get('trial_accuracy')),
         'summary': escape(summary), 'notes': notes, 'alerts': alerts, 'channel_rows': ''.join(rows),
+        'performance_note': '<p>O resultado é uma estimativa offline deste bloco; não substitui o modelo ativo no online.</p>' if available else '',
         'pca': figure(pca_available, 'pca_check.png', 'Mapa PCA disponível após o treino deste bloco.'),
         'matrix': figure(plot_matrix, 'confusion_matrix.png', 'Matriz indisponível até concluir a validação cruzada.'),
         'thresholds': escape(json.dumps(report['thresholds'], ensure_ascii=False)),
