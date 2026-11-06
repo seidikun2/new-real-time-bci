@@ -14,6 +14,7 @@
 <div class="metrics"><div class="metric"><span>Acurácia média · CV</span><strong>{{accuracy}}</strong><small>Predições fora do fold de treino</small></div><div class="metric"><span>Acurácia balanceada</span><strong>{{balanced}}</strong><small>Mesmo peso para cada classe</small></div><div class="metric"><span>Voto por tentativa</span><strong>{{trial_accuracy}}</strong><small>Decisão agregada no trial</small></div><div class="metric"><span>Aquisição registrada</span><strong>{{fs}} <small>Hz</small></strong><small>{{channel_count}} canais · {{samples}} amostras</small></div></div>
 <div class="notice">{{notes}}<p>{{summary}}</p>{{performance_note}}</div>
 {{timing}}
+{{realtime}}
 <div class="grid"><section class="card"><div class="eyebrow">Representação visual</div><h2>Mapa PCA</h2><p class="muted">Check do bloco no espaço de duas dimensões. A classificação usa o espaço completo.</p>{{pca}}</section>
 <section class="card"><div class="eyebrow">Desempenho fora do treino</div><h2>Matriz de confusão</h2><p class="muted">Linhas: classe real. Colunas: classe predita. À direita, porcentagem dentro de cada classe real.</p>{{matrix}}</section></div>
 <section class="card"><div class="eyebrow">Inspeção do sinal</div><h2>EEG, espectro e artefatos</h2><p class="muted">A escala do traçado é ajustada por canal para facilitar a leitura. As amplitudes originais estão nos CSVs.</p>{{overview}}</section>

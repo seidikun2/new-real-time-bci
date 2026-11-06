@@ -2,11 +2,11 @@
 """Inferência causal contínua: SVM no espaço completo; PCA somente no dashboard."""
 
 import os, csv, json, time, threading, pickle, datetime as dt
-from collections import deque
 from typing import Optional, Dict, Any
 
 import numpy as np
 from scipy import signal
+from threadpoolctl import threadpool_limits
 from pyriemann.estimation import Covariances
 from pyriemann.tangentspace import tangent_space
 from pylsl import StreamInfo, StreamOutlet, local_clock
@@ -17,6 +17,7 @@ from .receive_data_log import resolve_signal, make_log_dir
 from .data import select_channel_indices as select_channels
 from .representation_feedback import transform_online_representation
 from .feedback_contract import SIGNAL_CHANNELS, classifier_probabilities, signal_vector
+from .realtime import LatestWindow, RealtimeMonitor, realtime_options, fresh_timestamp
 
 
 def log(msg: str) -> None:
@@ -154,7 +155,7 @@ def class_outputs(clf, feat: np.ndarray, model_meta: Dict[str, Any]):
     return classifier_probabilities(clf, feat, model_meta)
 
 
-def run_realtime_decoder(cfg: AppConfig, mode: str = "online", model_prefix: Optional[str] = None, stop_event: Optional[threading.Event] = None, feedback_mode: str = "none", ready_event=None):
+def run_realtime_decoder(cfg: AppConfig, mode: str = "online", model_prefix: Optional[str] = None, stop_event: Optional[threading.Event] = None, feedback_mode: str = "none", ready_event=None, monitor=None):
     if stop_event is None:
         stop_event = threading.Event()
 
@@ -193,7 +194,6 @@ def run_realtime_decoder(cfg: AppConfig, mode: str = "online", model_prefix: Opt
         raise ValueError(f"Fs stream={fs:.2f} Hz diferente do modelo={train_fs:.2f} Hz.")
 
     sos = design_bandpass(fs, order, band_hz)
-    zf = np.zeros((sos.shape[0], 2, len(sel_idx)))
 
     win_n = int(round(window_s * fs))
     hop_n = max(1, int(round(step_s * fs)))
@@ -220,87 +220,111 @@ def run_realtime_decoder(cfg: AppConfig, mode: str = "online", model_prefix: Opt
     else:
         log("Modelo antigo sem bloco 'representation': usando PCA identity nos canais rep1/rep2.")
     log("Classificação no espaço tangente completo; PCA apenas para o experimentador.")
-    fcsv, wcsv, _ = open_csv_logger(cfg, mode, feedback_mode=feedback_mode)
+    fcsv, wcsv, log_path = open_csv_logger(cfg, mode, feedback_mode=feedback_mode)
     unix_offset = time.time() - local_clock()
+    options = realtime_options(cfg)
+    monitor = monitor if monitor is not None else RealtimeMonitor()
+    trace_path = os.path.splitext(log_path)[0] + '_timing.csv'
+    monitor.update(options=options, trace_file=trace_path, window_s=window_s, step_s=step_s,
+                   feature_dimensions=clf.n_features_in_)
+    buffer = LatestWindow(win_n, len(sel_idx), sos, fs, options['max_output_age_s'], monitor)
+    reader_stop = threading.Event()
+    reader_errors = []
 
-    buf_X = deque(maxlen=win_n)
-    buf_t = deque(maxlen=win_n)
-    n_samples = 0
+    def receive():
+        try:
+            while not stop_event.is_set() and not reader_stop.is_set():
+                data, stamps = inlet.pull_chunk(timeout=.02, max_samples=max(64, round(fs*2)))
+                if not stamps:
+                    continue
+                now = local_clock()
+                X = np.asarray(data, float)[:, source_indices] * source_scales
+                buffer.ingest(X[:, sel_idx], stamps, now)
+                backlog = inlet.samples_available()
+                previous = monitor.snapshot()['max_inlet_backlog_samples']
+                monitor.update(inlet_backlog_samples=backlog,
+                               max_inlet_backlog_samples=max(backlog, previous))
+        except Exception as exc:
+            reader_errors.append(exc)
+            reader_stop.set()
+
+    reader = threading.Thread(target=receive, name='EEG-decoder-reception', daemon=True)
+    fields = ['elapsed_s', 'window_end_lsl_s', 'input_age_s', 'compute_s', 'feature_s',
+              'classifier_s', 'pca_s', 'output_age_s', 'published', 'skipped_windows',
+              'discarded_input_samples', 'inlet_backlog_samples']
     next_compute = win_n
-    previous_stamp = None
-
+    reader.start()
     try:
-        while not stop_event.is_set():
-            data, ts = inlet.pull_chunk(timeout=0.2, max_samples=max(32, 4 * hop_n))
-            if not ts:
-                continue
-
-            X = np.asarray(data, dtype=float)[:, source_indices] * source_scales
-            if X.ndim != 2 or X.shape[1] <= max(sel_idx):
-                continue
-            if not np.isfinite(X).all():
-                raise ValueError("EEG contém NaN/Inf. Bloco interrompido; inspecione os canais.")
-            if not np.isfinite(ts).all() or np.any(np.diff(ts) <= 0) or (previous_stamp is not None and ts[0] <= previous_stamp):
-                raise ValueError("Timestamps EEG inválidos durante inferência.")
-            if (previous_stamp is not None and ts[0] - previous_stamp > max(.1, 1.5/fs)) or np.any(np.diff(ts) > max(.1, 1.5/fs)):
-                raise ValueError("Lacuna no EEG durante inferência. Inspecione aquisição antes de continuar.")
-            previous_stamp = ts[-1]
-            X_sel = X[:, sel_idx]
-
-            # Mesmo tipo de filtro do treino: causal contínuo, preservando estado.
-            Xf, zf = signal.sosfilt(sos, X_sel, axis=0, zi=zf)
-
-            for x_f, t_lsl in zip(Xf, ts):
-                buf_X.append(x_f)
-                buf_t.append(float(t_lsl))
-                n_samples += 1
-
-                if n_samples >= next_compute and len(buf_X) >= win_n:
-                    X_win = np.vstack(buf_X)  # (T,C), já filtrado
-                    feat = window_to_feature(X_win.T, cmean)
-                    visual = pca.transform(feat[None, :])[0]
-                    pca_dim = int(getattr(pca, "n_components_", getattr(pca, "n_components", 2)) or 2)
-                    p1_raw = float(visual[0]) if pca_dim >= 1 else 0.0
-                    p2_raw = float(visual[1]) if pca_dim >= 2 else 0.0
-
-                    # MESMO transform usado para gerar as densidades do treino.
-                    # Coordenadas servem apenas ao dashboard do experimentador.
-                    rep = transform_online_representation(visual, meta)
-                    rep1 = float(rep[0])
-                    rep2 = float(rep[1])
-
-                    probs, active = class_outputs(clf, feat, meta)
-                    vec = signal_vector(rep1, rep2, probs, active)
-                    outlet.push_sample(vec, timestamp=float(buf_t[-1]))
+        with open(trace_path, 'x', newline='', encoding='utf-8') as trace, threadpool_limits(limits=options['blas_threads']):
+            timing_writer = csv.DictWriter(trace, fieldnames=fields)
+            timing_writer.writeheader()
+            while not stop_event.is_set():
+                if reader_errors:
+                    raise reader_errors[0]
+                current = buffer.latest(next_compute)
+                if current is None:
+                    stop_event.wait(.01)
+                    continue
+                X_win, t_out, sequence = current
+                monitor.add(skipped_windows=max(0, (sequence-next_compute)//hop_n))
+                next_compute = sequence+hop_n
+                age_in = local_clock()-t_out
+                if not fresh_timestamp(t_out, local_clock(), options['max_output_age_s']):
+                    monitor.update(status='Aguardando janela recente', window_end_lsl_s=t_out)
+                    continue
+                monitor.update(status='Calculando janela recente', window_end_lsl_s=t_out,
+                               window_age_at_start_s=age_in)
+                began = time.perf_counter()
+                feat = window_to_feature(X_win.T, cmean)
+                feature_s = time.perf_counter()-began
+                stage = time.perf_counter()
+                probs, active = class_outputs(clf, feat, meta)
+                classifier_s = time.perf_counter()-stage
+                stage = time.perf_counter()
+                visual = pca.transform(feat[None, :])[0]
+                p1_raw = float(visual[0]) if len(visual) else 0.
+                p2_raw = float(visual[1]) if len(visual) > 1 else 0.
+                rep = transform_online_representation(visual, meta)
+                rep1, rep2 = float(rep[0]), float(rep[1])
+                vec = signal_vector(rep1, rep2, probs, active)
+                pca_s = time.perf_counter()-stage
+                compute_s = time.perf_counter()-began
+                output_age = local_clock()-t_out
+                published = fresh_timestamp(t_out, local_clock(), options['max_output_age_s']) and not stop_event.is_set()
+                if published:
+                    outlet.push_sample(vec, timestamp=t_out)
+                    monitor.add(published_results=1)
+                    monitor.update(status='Controle com EEG recente', last_published_lsl_s=t_out)
                     if ready_event is not None:
                         ready_event.set()
-
-                    t_out = float(buf_t[-1])
-                    recv_time_s = time.time()
-                    iso = timestamp_iso_from_lsl(t_out, unix_offset)
                     wcsv.writerow([
-                        iso,
-                        f"{t_out:.9f}",
-                        f"{recv_time_s:.6f}",
-                        f"{p1_raw:.6f}",
-                        f"{p2_raw:.6f}",
-                        f"{rep1:.6f}",
-                        f"{rep2:.6f}",
-                        f"{probs['LEFT_MI_STIM']:.6f}",
-                        f"{probs['REST_STIM']:.6f}",
-                        f"{probs['RIGHT_MI_STIM']:.6f}",
-                        f"{active['LEFT_MI_STIM']:.0f}",
-                        f"{active['REST_STIM']:.0f}",
-                        f"{active['RIGHT_MI_STIM']:.0f}",
+                        timestamp_iso_from_lsl(t_out, unix_offset), f'{t_out:.9f}', f'{time.time():.6f}',
+                        f'{p1_raw:.6f}', f'{p2_raw:.6f}', f'{rep1:.6f}', f'{rep2:.6f}',
+                        *[f"{probs[label]:.6f}" for label in ['LEFT_MI_STIM', 'REST_STIM', 'RIGHT_MI_STIM']],
+                        *[f"{active[label]:.0f}" for label in ['LEFT_MI_STIM', 'REST_STIM', 'RIGHT_MI_STIM']],
                         str(feedback_mode),
                     ])
-                    next_compute += hop_n
+                else:
+                    monitor.add(rejected_results=1)
+                    monitor.update(status='Cálculo atrasado descartado; buscando janela recente')
+                monitor.update(window_end_lsl_s=t_out, window_age_at_start_s=age_in,
+                               compute_s=compute_s, feature_s=feature_s, classifier_s=classifier_s,
+                               pca_s=pca_s, output_age_s=output_age)
+                stats = monitor.snapshot()
+                timing_writer.writerow(dict(elapsed_s=stats['elapsed_s'], window_end_lsl_s=t_out,
+                                            input_age_s=age_in, compute_s=compute_s, feature_s=feature_s,
+                                            classifier_s=classifier_s, pca_s=pca_s, output_age_s=output_age,
+                                            published=int(published), skipped_windows=stats['skipped_windows'],
+                                            discarded_input_samples=stats['discarded_input_samples'],
+                                            inlet_backlog_samples=stats.get('inlet_backlog_samples', 0)))
+                trace.flush()
     except KeyboardInterrupt:
-        log("Ctrl+C recebido.")
+        log('Ctrl+C recebido.')
     finally:
+        reader_stop.set()
+        reader.join(timeout=2.)
         inlet.close_stream()
-        try:
-            fcsv.close()
-        except Exception:
-            pass
-        log("Decoder encerrado.")
+        fcsv.close()
+        if reader_errors:
+            monitor.update(status='Falha na recepção do decoder', error=str(reader_errors[0]))
+        log('Decoder encerrado.')

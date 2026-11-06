@@ -26,6 +26,7 @@ from bci_core.decoder_calibration import run_calibration
 from bci_core.check_data import run_check_data
 from bci_core.data import find_marker_signal_pairs
 from bci_core.storage import external_path, prepare_data_root
+from bci_core.realtime import RealtimeMonitor
 
 PROJECT = Path(__file__).resolve().parent
 
@@ -146,6 +147,7 @@ def run_block(cfg, mode='train', model_ref=None, block_index=0, operator=None, a
     timeout = float(p.get('startup_timeout_s', 30.))
     next_preview = 0.
     cues_started = False
+    realtime = RealtimeMonitor() if model_ref else None
     def worker(function, *args, **kwargs):
         try:
             function(*args, **kwargs)
@@ -171,7 +173,10 @@ def run_block(cfg, mode='train', model_ref=None, block_index=0, operator=None, a
                 preview(snapshot)
             timing_preview = getattr(operator, 'update_timing_preview', None)
             if timing_preview:
-                timing_preview(recorder.timing_preview())
+                timing_data = recorder.timing_preview()
+                if realtime is not None:
+                    timing_data['decoder'] = realtime.snapshot()
+                timing_preview(timing_data)
             next_preview = time.monotonic()+1.
         try:
             raise errors.get_nowait()
@@ -198,7 +203,14 @@ def run_block(cfg, mode='train', model_ref=None, block_index=0, operator=None, a
         while not event.is_set():
             wait(.05)
             if time.monotonic() > deadline:
-                raise TimeoutError(f'{label} não ficou pronto em {timeout} segundos.')
+                detail = ''
+                if label == 'Decoder' and realtime is not None:
+                    stats = realtime.snapshot()
+                    cost = stats.get('compute_s')
+                    detail = f" Previsões publicadas: {stats['published_results']}; resultados vencidos: {stats['rejected_results']}."
+                    if cost is not None:
+                        detail += f' Último cálculo: {cost*1000:.1f} ms. Consulte os tempos do decoder no relatório.'
+                raise TimeoutError(f'{label} não ficou pronto em {timeout} segundos.' + detail)
     try:
         source = source_name(cfg)
         if source in {'simulator', 'hiamp'}:
@@ -208,11 +220,11 @@ def run_block(cfg, mode='train', model_ref=None, block_index=0, operator=None, a
         if model_ref:
             validate_model(cfg, model_ref)
             decoder_ready = threading.Event()
-            start(run_realtime_decoder, cfg, mode, model_ref, stop, 'none', ready_event=decoder_ready)
+            start(run_realtime_decoder, cfg, mode, model_ref, stop, 'none', ready_event=decoder_ready, monitor=realtime)
             ready(decoder_ready, 'Decoder')
             if cfg._raw_config.get('control', {}).get('enabled', True):
                 control_ready = threading.Event()
-                start(run_intention_controller, cfg, mode, stop, 'none', ready_event=control_ready)
+                start(run_intention_controller, cfg, mode, stop, 'none', ready_event=control_ready, monitor=realtime)
                 ready(control_ready, 'Controle Unity')
             if operator is None:
                 dashboard = start_dashboard(cfg, model_ref)
@@ -263,6 +275,7 @@ def run_block(cfg, mode='train', model_ref=None, block_index=0, operator=None, a
                     'ended_at': recorder.ended_at, 'finished_at': datetime.now().astimezone().isoformat(timespec='milliseconds'),
                     'mode': mode,
                     'samples': recorder.samples, 'stream': recorder.stream_metadata, 'timing': recorder.timing_summary(),
+                    'realtime': realtime.snapshot() if realtime is not None else {},
                     'config': {**cfg._raw_config, 'experiment': asdict(cfg.experiment)},
                     'effective_config': {key: value for key, value in asdict(cfg).items() if key != '_raw_config'},
                     'schedule': [event.__dict__ for event in events], 'block_index': block_index}

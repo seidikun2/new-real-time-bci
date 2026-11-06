@@ -4,11 +4,12 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 
-from pylsl import StreamInfo, StreamOutlet, StreamInlet, resolve_byprop, local_clock
+from pylsl import StreamInfo, StreamOutlet, StreamInlet, resolve_byprop, local_clock, proc_clocksync
 
 from .feedback_contract import (probabilities_from_signal, active_flags_from_signal,
                                 movement_targets, legacy_state_id)
 from .receive_data_log import make_log_dir
+from .realtime import fresh_timestamp, realtime_options
 
 
 @dataclass
@@ -49,8 +50,12 @@ def approach(value, target, elapsed, rise, fall):
     return min(1., value + delta) if target else max(0., value - delta)
 
 
-def run_intention_controller(cfg, mode='online', stop_event=None, feedback_mode='none', ready_event=None):
+def run_intention_controller(cfg, mode='online', stop_event=None, feedback_mode='none', ready_event=None, monitor=None):
     c = cfg._raw_config.get('control', {})
+    max_age = realtime_options(cfg)['max_output_age_s']
+    if monitor is not None:
+        monitor.update(enter_persist_s=c.get('enter_persist_s', .1),
+                       movement_rise_s=c.get('movement_rise_s', 1.), movement_fall_s=c.get('movement_fall_s', .8))
     machine = IntentionStateMachine(c.get('enter_persist_s', .1), c.get('exit_persist_s', .1),
                                     c.get('min_probability', .4), c.get('min_probability_margin', .05))
     inlet = None
@@ -58,7 +63,7 @@ def run_intention_controller(cfg, mode='online', stop_event=None, feedback_mode=
     while not stop_event.is_set() and time.monotonic() < deadline:
         streams = resolve_byprop('name', cfg.decoder.outlet_name, timeout=.2)
         if streams:
-            inlet = StreamInlet(streams[0])
+            inlet = StreamInlet(streams[0], processing_flags=proc_clocksync)
             break
     if inlet is None:
         if stop_event.is_set():
@@ -83,13 +88,15 @@ def run_intention_controller(cfg, mode='online', stop_event=None, feedback_mode=
     try:
         with path.open('x', newline='', encoding='utf-8') as stream:
             writer = csv.writer(stream)
-            writer.writerow(['lsl_time_s', 'decoder_lsl_time_s', *labels])
+            writer.writerow(['lsl_time_s', 'decoder_lsl_time_s', *labels, 'eeg_age_s', 'fresh'])
             while not stop_event.is_set():
                 samples, stamps = inlet.pull_chunk(timeout=.005)
                 now = time.monotonic()
                 if stamps:
                     sample, stamp, last_sample = samples[-1], stamps[-1], now
-                if last_sample is None or now - last_sample > c.get('decoder_stale_s', .6):
+                fresh = (last_sample is not None and now-last_sample <= c.get('decoder_stale_s', .6)
+                         and fresh_timestamp(stamp, local_clock(), max_age))
+                if not fresh:
                     machine.reset()
                     state, confidence = 'REST_STIM', 0.
                 else:
@@ -102,7 +109,10 @@ def run_intention_controller(cfg, mode='online', stop_event=None, feedback_mode=
                 vector = [*legs, float(sid == 0), float(sid == 1), 0., float(sid == 3), confidence, 0., float(sid)]
                 ts = local_clock()
                 outlet.push_sample(vector, timestamp=ts)
-                writer.writerow([ts, stamp, *vector])
+                writer.writerow([ts, stamp, *vector, ts-stamp if last_sample is not None else '', int(fresh)])
+                if monitor is not None:
+                    monitor.update(control_source_age_s=ts-stamp if last_sample is not None else None,
+                                   control_fresh=bool(fresh))
                 last_update = now
                 stop_event.wait(1 / hz)
     finally:

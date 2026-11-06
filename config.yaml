@@ -127,6 +127,12 @@ rng_seed                 : 42
 decoder_outlet_name      : "Signal"
 decoder_outlet_type      : "BCI"
 
+# Controle: sempre a janela mais recente, sem fila de previsões atrasadas.
+# Este limite é a idade do fim da janela EEG na saída, não a duração da janela/rampa.
+realtime:
+  max_output_age_s: 0.50
+  blas_threads: 1          # evita disputar vários núcleos por cada matriz pequena
+
 representation_feedback:
   pad_frac        : 0.10
   grid_size       : 240

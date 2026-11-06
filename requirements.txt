@@ -7,3 +7,4 @@ PyYAML
 pylsl
 pyriemann
 pandas
+threadpoolctl

@@ -142,4 +142,12 @@ class PersistentOperatorTests(unittest.TestCase):
         self.op.update_timing_preview({'rows': [{'stream':'working','age_s':-.5,'elapsed_s':3.,'write_lag_s':.01,'queue_batches':0}],
                                        'options':{'max_age_s':.25}, 'phase':'diagnostic', 'health':{'reason':'Teste temporal'}})
         self.assertIn('no futuro', self.op.timing_preview.metrics.get())
+        from bci_core.realtime import RealtimeMonitor
+        monitor = RealtimeMonitor()
+        monitor.update(compute_s=.07, output_age_s=.08, window_s=1., step_s=.05,
+                       enter_persist_s=.1, movement_rise_s=1., control_fresh=False, control_source_age_s=.8)
+        self.op.update_timing_preview({'rows': [], 'options': {'max_age_s': .5}, 'phase': 'protocol',
+                                      'health': {'reason': 'Online'}, 'decoder': monitor.snapshot()})
+        self.assertIn('70.0 ms', self.op.timing_preview.metrics.get())
+        self.assertIn('repouso por falta de previsão recente', self.op.timing_preview.metrics.get())
         self.assert_one_window()

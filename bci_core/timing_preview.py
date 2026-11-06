@@ -37,6 +37,17 @@ class TimingPreview:
                     text += f" · gravação {lag*1000:.1f} ms" if lag is not None else ' · gravação pendente'
                     text += f" · fila {row.get('queue_batches', 0)} lotes"
                 values.append(text)
+        decoder = data.get('decoder', {})
+        if decoder:
+            ms = lambda key: f"{decoder[key]*1000:.1f} ms" if decoder.get(key) is not None else '—'
+            values.append(f"Decoder: {decoder['status']} · cálculo {ms('compute_s')} · idade na saída {ms('output_age_s')}")
+            values.append(f"Janelas puladas: {decoder['skipped_windows']} · resultados vencidos: {decoder['rejected_results']} · "
+                          f"amostras descartadas só no decoder: {decoder['discarded_input_samples']}")
+            values.append(f"Janela {ms('window_s')} · passo {ms('step_s')} · persistência {ms('enter_persist_s')} · "
+                          f"rampa de movimento {ms('movement_rise_s')}")
+            if 'control_fresh' in decoder:
+                values.append(f"Controle: {'EEG recente' if decoder['control_fresh'] else 'repouso por falta de previsão recente'} · "
+                              f"idade do EEG no comando {ms('control_source_age_s')}")
         self.metrics.set('\n'.join(values))
         self.draw()
 

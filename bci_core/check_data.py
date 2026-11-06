@@ -157,6 +157,7 @@ def inspect_quality(times, X, names, marker_times, labels, cfg):
     report = dict(status='attention' if issues else 'ok', issues=list(dict.fromkeys(issues)),
                   timestamp_integrity=timing,
                   timing_audit=audit,
+                  realtime=getattr(cfg, '_realtime_audit', {}),
                   estimated_fs_hz=estimated_fs, samples=len(times), gaps=gaps, estimated_missing_samples=missing,
                   marker_counts=dict(counts), channels=rows, unit=unit,
                   source=source_name(cfg), simulated=simulated, observations=observations,
@@ -180,6 +181,7 @@ def run_check_data(cfg, mode='train', markers_file=None, signal_file=None, save_
     if len(times) < 2:
         report = {'status': 'error', 'issues': ['EEG vazio ou insuficiente; confira aquisição antes de repetir.'],
                   'evaluation': evaluation, 'collection': collection, 'samples': len(times),
+                  'realtime': getattr(cfg, '_realtime_audit', {}),
                   'estimated_fs_hz': None, 'channels': [], 'source': source_name(cfg),
                   'thresholds': cfg._raw_config.get('quality', {}), 'unit': 'uV'}
         (folder / 'quality.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')

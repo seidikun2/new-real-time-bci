@@ -223,6 +223,54 @@ junto do relatório e pode ser enviada com o `quality.json` para diagnóstico,
 sem reenviar todos os sinais. Os inlets continuam independentes: as curvas não
 representam uma correção de dejitter medida amostra a amostra.
 
+## Atraso do avatar e processamento em tempo real
+
+O decoder mantém uma janela recente em memória. Uma thread recebe e filtra EEG;
+a classificação usa a janela mais nova disponível, sem calcular em sequência
+todas as janelas atrasadas. Se o cálculo demorar mais que o passo solicitado,
+algumas atualizações são puladas. A classificação continua no espaço tangente
+completo; o PCA serve apenas ao experimentador.
+
+`realtime.max_output_age_s: 0.50` limita a idade do fim da janela EEG ao publicar
+uma previsão. Resultados que terminem vencidos são descartados. O controlador
+confere também o timestamp do EEG, além do tempo desde a chegada da previsão:
+uma previsão antiga recém-chegada não autoriza movimento. Sem previsão recente,
+o alvo volta a repouso pela rampa configurada. Esse limite é separado de
+`acquisition_timing.max_age_s`, que verifica os horários na recepção da coleta.
+Aumentar qualquer limite não acelera o processamento.
+
+As janelas puladas, amostras descartadas no decoder e resultados vencidos são
+contados. Amostras antigas represadas são descartadas somente no decoder. Após
+descarte ou lacuna, filtro e janela são reiniciados e o decoder aguarda uma janela
+completa. O recorder preserva sua cópia independente; sua fila limitada e os
+checks de integridade continuam ativos. A política não ignora NaN/Inf, timestamps
+de trabalho inválidos, erros de gravação ou ausência prolongada de EEG.
+
+Na aba **Sincronização**, durante o online, confira custo do último cálculo,
+idade do EEG na saída, descartes e idade no comando de controle. O relatório
+inclui **Processamento em tempo real**, gráfico de custos por etapa e o link
+`decoder_timing.csv`. Envie esse arquivo e `quality.json` para investigar atraso
+no online; `timing_batches.csv` continua descrevendo a recepção/gravação.
+
+| O que aparece | Onde investigar |
+| --- | --- |
+| EEG já chega antigo ao cálculo | Publicador, transmissão, backlog do inlet e recepção. |
+| Entrada recente; cálculo acima do passo ou resultados vencidos | CPU, bibliotecas numéricas e custo por etapa; janelas puladas reduzem a taxa efetiva. |
+| Previsões recentes; comando demora | Persistência e rampas do controlador; depois, recepção/renderização no Unity. |
+| Fila e atraso de gravação crescem | Disco e gravação; são métricas separadas da inferência. |
+
+O padrão usa janela de **1 s**, passo de **50 ms**, persistência de **100 ms** e
+rampa de **1 s** até o movimento completo. Uma janela de 1 s contém sinal anterior
+ao tapping; o reconhecimento depende do classificador, e a rampa suaviza o avatar.
+O limite de 500 ms mede a idade do **fim** dessa janela, não a resposta física ao
+tapping nem o tempo até completar o movimento. A acurácia offline não mede a taxa
+nem a latência das decisões online.
+
+`realtime.blas_threads: 1` evita que cada operação matricial pequena dispute
+vários núcleos com recepção, GUI e gravação. Para validar no computador do
+experimento, rode um bloco online com o modelo escolhido, veja os tempos ao vivo
+e o relatório; os testes de aquisição sem modelo não exercitam o classificador.
+
 ## Contratos LSL
 
 | Stream | Formato e função |

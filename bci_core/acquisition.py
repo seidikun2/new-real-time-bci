@@ -121,6 +121,7 @@ def recording_config(cfg, signal_file):
     result._recorded_unit = stream.get('unit', 'uV')
     result._stream_observations = stream.get('observations', [])
     result._timing_audit = meta.get('timing', {})
+    result._realtime_audit = meta.get('realtime', {})
     result._audit_only = meta.get('audit_only', False)
     recorded = meta.get('config', {})
     effective = meta.get('effective_config', {})
