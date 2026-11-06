@@ -35,7 +35,11 @@ def inspect_quality(times, X, names, marker_times, labels, cfg):
                 summaries.append(f"{label}: {item['backward_pairs']} recuos (até {item['largest_backward_s']*1000:.3f} ms)")
         observations.append(f"Horários: {audit.get('method', 'não registrado')}. " + '; '.join(summaries) + '.')
         if audit.get('active'):
-            observations.append('Os máximos desde o início incluem a acomodação. A decisão temporal do treino considera o período do protocolo/teste, mostrado separadamente abaixo.')
+            if audit.get('recovery'):
+                observations.append('A acomodação é mostrada separadamente. Episódios pontuais marcam trechos excluídos; '
+                                    'a interrupção depende da persistência durante o protocolo/teste.')
+            else:
+                observations.append('Os máximos desde o início incluem a acomodação. A decisão temporal do treino considera o período do protocolo/teste, mostrado separadamente abaixo.')
         observations.append(f"Maior pausa de recepção: {audit.get('max_receive_pause_s', 0):.3f} s; "
                             f"maior atraso de gravação: {audit.get('max_write_lag_s', 0):.3f} s. "
                             f"Arquivo de trabalho: {audit.get('received_samples', 0)} amostras recebidas, "
@@ -58,7 +62,9 @@ def inspect_quality(times, X, names, marker_times, labels, cfg):
     missing = int(np.sum(np.maximum(np.round(good_dt * fs) - 1, 0)))
     timing = timestamp_integrity(times)
     if timing['error']:
-        issues.append('ERRO: ' + timing['error'])
+        prefix = ('Trechos com horários inválidos são excluídos do treino; CSV original preservado. '
+                  if audit.get('recovery', {}).get('policy') == 'exclude_segments' else 'ERRO: ')
+        issues.append(prefix + timing['error'])
     if gaps:
         issues.append(f'Descontinuidade/jitter: {gaps} intervalos longos (~{missing} amostras potencialmente ausentes; estimativa por timestamps).')
     if estimated_fs is None or abs(estimated_fs-fs) / fs > .05:
@@ -161,7 +167,9 @@ def inspect_quality(times, X, names, marker_times, labels, cfg):
                   estimated_fs_hz=estimated_fs, samples=len(times), gaps=gaps, estimated_missing_samples=missing,
                   marker_counts=dict(counts), channels=rows, unit=unit,
                   source=source_name(cfg), simulated=simulated, observations=observations,
-                  thresholds=q, notes='Heurísticas: sem exclusão automática; confira unidade/ganho. CV não comprova ausência de artefatos.')
+                  thresholds=q, notes='Heurísticas de amplitude/espectro não excluem canais automaticamente. '
+                  'Trechos temporalmente inválidos ou não finitos são excluídos conforme a política registrada. '
+                  'Confira unidade/ganho; CV não comprova ausência de artefatos.')
     return report, clean, frequencies, psd, bad
 
 

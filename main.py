@@ -103,7 +103,9 @@ def choose_model(cfg, operator):
             selected_meta = read_model_meta(reference)
             selected_accuracy = selected_meta.get('cv', {}).get('acc_mean')
             score = f' · CV {selected_accuracy:.1%}' if selected_accuracy is not None else ''
-            warning = ' · possui alertas temporais; consulte o relatório' if selected_meta.get('timing_warnings') else ''
+            usable = selected_meta.get('usable_data', {})
+            needs_review = selected_meta.get('timing_warnings') or usable.get('excluded_samples') or usable.get('segments', 1) > 1
+            warning = ' · possui alertas ou trechos excluídos; consulte o relatório' if needs_review else ''
             operator.notify(f"Modelo online: {selected_meta.get('session_type', 'selecionado')}{score}{warning}")
             return reference
         except Exception as exc:

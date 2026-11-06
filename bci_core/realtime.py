@@ -5,6 +5,7 @@ import time
 
 import numpy as np
 from scipy import signal
+from .usable_data import valid_segments
 
 
 def realtime_options(cfg):
@@ -66,20 +67,22 @@ class LatestWindow:
         values = np.asarray(values, float)
         if not len(stamps):
             return
-        if not np.isfinite(values).all():
-            raise ValueError('EEG contém NaN/Inf durante inferência.')
-        if (not np.isfinite(stamps).all() or np.any(np.diff(stamps) <= 0)
-                or (self.previous is not None and stamps[0] <= self.previous)):
-            raise ValueError('Timestamps EEG inválidos durante inferência.')
         self.monitor.add(received_samples=len(stamps))
         delta = np.diff(np.r_[self.previous, stamps] if self.previous is not None else stamps)
-        self.previous = float(stamps[-1])
+        runs = valid_segments(stamps, values, self.fs)
+        boundary_error = self.previous is not None and stamps[0] <= self.previous
+        finite = stamps[np.isfinite(stamps)]
+        self.previous = float(finite[-1]) if len(finite) else None
         gaps = np.flatnonzero(delta > max(.02, 1.5/self.fs))
-        start = 0
-        if len(gaps):
-            start = int(gaps[-1]) + (0 if len(delta) == len(stamps) else 1)
+        start = runs[-1][0] if runs and runs[-1][1] == len(stamps) else len(stamps)
+        if boundary_error:
+            # Recomeça no lote seguinte; não atravessa uma mudança de ordem entre lotes.
+            start = len(stamps)
+        if start or boundary_error or len(gaps):
             self.reset()
             self.monitor.add(gap_resets=len(gaps))
+            if start or boundary_error:
+                self.monitor.add(invalid_resets=1)
         # Um lote represado não deve atrasar o controle. Os CSVs do recorder são independentes.
         fresh = np.flatnonzero(stamps >= now-self.max_age)
         stale_prefix = int(fresh[0]) if len(fresh) else len(stamps)

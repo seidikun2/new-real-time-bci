@@ -11,6 +11,7 @@ def timing_report(audit, folder):
         return ''
     escape = lambda value: html.escape(str(value))
     options = audit.get('options', {})
+    recovery = audit.get('recovery', {})
     limit_ms = options.get('max_age_s', .25)*1000
     began = audit.get('protocol_started_s')
     path = Path(audit.get('trace_file') or '')
@@ -54,6 +55,9 @@ def timing_report(audit, folder):
                     ax.axvspan(0,began if began is not None else frame.elapsed_s.max(),color='#dce1e8',alpha=.35)
                     if began is not None:
                         ax.axvline(began,color='#64748b',ls=':',lw=.9)
+                    for event in recovery.get('episodes', []):
+                        end = event['end_elapsed_s'] if event['end_elapsed_s'] is not None else frame.elapsed_s.max()
+                        ax.axvspan(event['start_elapsed_s'], end, color='#f2ad35', alpha=.15)
                 fig.suptitle('Sincronização · cinza de fundo = acomodação antes dos estímulos/teste',fontsize=13)
                 fig.savefig(folder/'timing_overview.png',dpi=145,facecolor='white')
                 plt.close(fig)
@@ -79,14 +83,36 @@ def timing_report(audit, folder):
     error = audit.get('training_error')
     if error:
         verdict = 'Alinhamento ainda não validado: '+error
+    elif recovery.get('episodes'):
+        verdict = 'Episódios de aquisição registrados; trechos afetados são excluídos do treino. Nenhuma falha persistente encerrou a aquisição segundo a política registrada.'
     elif audit.get('warnings'):
         verdict = 'Dados de trabalho dentro dos critérios operacionais, com alertas nos horários originais. Isso não comprova a temporização física do EEG; revise a fonte antes de interpretar a acurácia.'
     elif audit.get('active'):
         verdict = 'Sem violação dos critérios operacionais durante o protocolo/teste. Os picos da acomodação permanecem registrados separadamente.'
     else:
         verdict = 'Consulte o escopo e a fase da coleta. Este registro não separa necessariamente a acomodação do protocolo.'
+    recovery_html = ''
+    if recovery:
+        event_rows = []
+        for event in recovery['episodes']:
+            values = [event['phase'], event['stream'], f"{event['start_elapsed_s']:.2f} s",
+                      f"{event['duration_s']:.2f} s", event['batches'],
+                      'Recuperado' if event['end_elapsed_s'] is not None else 'Aberto no encerramento', event['reason']]
+            event_rows.append('<tr>'+''.join(f'<td>{escape(v)}</td>' for v in values)+'</tr>')
+        recovery_html = (f"<p>Limiar por lote: ±{limit_ms:.0f} ms. Interrompe por falha contínua de "
+                         f"{recovery['max_bad_duration_s']:g} s. Lotes de trabalho afetados: "
+                         f"{recovery['bad_batches']['working']}/{recovery['batches']['working']}. "
+                         'Âmbar nos gráficos indica episódios marcados; a faixa cinza e os picos da acomodação permanecem separados.</p>')
+        if event_rows:
+            recovery_html += ('<div class="table-wrap"><table><thead><tr><th>Fase</th><th>Fluxo</th><th>Início</th>'
+                              '<th>Duração</th><th>Lotes</th><th>Estado</th><th>Motivo</th></tr></thead><tbody>'
+                              +''.join(event_rows)+'</tbody></table></div>')
+        if recovery['excluded_intervals']:
+            pd.DataFrame(recovery['excluded_intervals']).to_csv(folder/'timing_excluded.csv', index=False)
+            recovery_html += '<p><a href="timing_excluded.csv">Trechos temporais excluídos do treino (CSV)</a></p>'
     return ('<section class="card"><div class="eyebrow">Diagnóstico temporal</div><h2>Sincronização e recepção</h2>'
             f'<p><strong>{escape(verdict)}</strong></p>'
+            +recovery_html+
             '<p>Desvio = relógio local LSL na recepção − timestamp da última amostra do lote. '
             '<strong>Positivo: amostra atrasada. Negativo: horário no futuro.</strong> '
             f'As linhas vermelhas marcam ±{limit_ms:.0f} ms. Este desvio não mede apenas atraso de rede.</p>'

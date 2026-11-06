@@ -25,6 +25,11 @@ class TimingPreview:
         if data['phase'] != 'warmup' and data['health'].get('waiting_for_batch'):
             self.status.set(self.status.get() + ' A espera isolada não invalida os dados recebidos.')
         values = []
+        recovery = data.get('recovery', {})
+        if recovery.get('episodes'):
+            values.append(f"Episódios marcados: {len(recovery['episodes'])} · "
+                          f"lotes de trabalho afetados: {recovery['bad_batches']['working']}/{recovery['batches']['working']} · "
+                          f"interrompe se persistir por {recovery['max_bad_duration_s']:g} s")
         for kind, name in [('working', 'Trabalho'), ('raw', 'Original sincronizado')]:
             rows = [row for row in data['rows'] if row['stream'] == kind]
             if rows:

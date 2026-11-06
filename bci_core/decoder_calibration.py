@@ -19,6 +19,7 @@ from .class_schema import class_details, training_label_map
 from .data import (read_signal_csv, read_markers_csv, select_channel_indices,
                    bandpass_causal, attempts_by_class, epoch_trials_sliding, timestamp_integrity)
 from .representation_feedback import prepare_training_representation
+from .usable_data import filter_segments
 
 
 def safe_cv_splits(y, groups, requested):
@@ -86,22 +87,31 @@ def run_calibration(cfg, markers_file, signal_file):
     if len(times) < 2:
         raise ValueError('EEG sem amostras suficientes para treinar.')
     timing = timestamp_integrity(times)
-    if timing['error']:
+    recovery = audit.get('recovery', {})
+    exclude_segments = recovery.get('policy') == 'exclude_segments'
+    if timing['error'] and not exclude_segments:
         raise ValueError(timing['error'])
-    if not np.isfinite(X).all():
+    if not np.isfinite(X).all() and not exclude_segments:
         raise ValueError('EEG contém NaN/Inf: consulte o relatório antes de treinar.')
     if not np.isfinite(tm).all() or np.any(np.diff(tm) < 0):
         raise ValueError('Timestamps de marcadores inválidos.')
     fs = cfg.fs_hz
-    if abs(1 / np.median(np.diff(times)) - fs) / fs > .05:
+    intervals = np.diff(times)
+    intervals = intervals[np.isfinite(intervals) & (intervals > 0)]
+    if not len(intervals) or abs(1 / np.median(intervals) - fs) / fs > .05:
         raise ValueError('Taxa de amostragem não corresponde à configuração.')
     indices = select_channel_indices(cfg.select_by, cfg.select_channels, names, cfg.index_base)
     selected = [names[i] for i in indices]
-    Xf = bandpass_causal(X[:, indices], fs, cfg.bp_order, cfg.bp_band_hz)
+    segments, usable = None, {}
+    if exclude_segments:
+        Xf, segments, usable = filter_segments(times, X[:, indices], fs, cfg.bp_order, cfg.bp_band_hz,
+                                               recovery.get('excluded_intervals', []))
+    else:
+        Xf = bandpass_causal(X[:, indices], fs, cfg.bp_order, cfg.bp_band_hz)
     label_map = training_label_map(labels, cfg.protocol.training_mode, cfg.protocol.online_target)
     attempts = attempts_by_class(tm, labels, list(label_map))
     Xw, y, groups, _ = epoch_trials_sliding(times, Xf, attempts, label_map, fs, cfg.window_s,
-                                           cfg.step_s, cfg.trial_duration_s, cfg.trial_offset_s)
+                                           cfg.step_s, cfg.trial_duration_s, cfg.trial_offset_s, segments=segments)
     if set(y) != set(label_map.values()):
         raise ValueError('Uma classe ficou sem janelas válidas; modelo não foi treinado.')
     cv = cross_validate(Xw, y, groups, cfg.svc_c, cfg.cv_splits, cfg.rng_seed)
@@ -120,6 +130,15 @@ def run_calibration(cfg, markers_file, signal_file):
             pickle.dump(artifact, stream)
     source = signal_path.with_suffix('.json')
     source_config = json.loads(source.read_text(encoding='utf-8')).get('config', {}) if source.exists() else {}
+    warnings = list(audit.get('warnings', []))
+    if usable:
+        usable.update(windows_used=len(y), trials_used=len(np.unique(groups)),
+                      trials_total=sum(len(events) for events in attempts.values()))
+        if usable['excluded_samples'] or usable['segments'] > 1:
+            warnings.append(f"Treino: {usable['excluded_samples']}/{usable['total_samples']} amostras excluídas; "
+                            f"{usable['segments']} segmentos, {usable['windows_used']} janelas de "
+                            f"{usable['trials_used']}/{usable['trials_total']} tentativas utilizáveis. "
+                            'Filtro reiniciado entre segmentos; janelas não atravessam trechos excluídos.')
     meta = {
         'schema_version': 2, 'feature_space': 'riemann', 'classifier_input': 'tangent_space',
         'feature_dimensions': int(classifier.n_features_in_),
@@ -130,9 +149,11 @@ def run_calibration(cfg, markers_file, signal_file):
         'channels_selected': selected, 'channel_indices': indices, 'fs_hz': fs,
         'signal_unit': getattr(cfg, '_recorded_unit', 'uV'),
         'timing_warnings': list(audit.get('warnings', [])),
-        'warnings': list(audit.get('warnings', [])),
+        'warnings': warnings, 'usable_data': usable,
         'timing_policy': {'method': audit.get('method'), 'validation_scope': audit.get('validation_scope'),
-                          'strict_raw_timestamps': audit.get('options', {}).get('strict_raw_timestamps')},
+                          'strict_raw_timestamps': audit.get('options', {}).get('strict_raw_timestamps'),
+                          'recovery_policy': recovery.get('policy'),
+                          'max_bad_duration_s': recovery.get('max_bad_duration_s')},
         'filter': {'band_hz': cfg.bp_band_hz, 'order': cfg.bp_order},
         'window_s': cfg.window_s, 'step_s': cfg.step_s, 'trial_duration_s': cfg.trial_duration_s,
         'classes_map': label_map, 'classes': details, 'cv': cv,

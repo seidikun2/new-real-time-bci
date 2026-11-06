@@ -249,9 +249,10 @@ class LSLTimingTests(unittest.TestCase):
         result = monitor.summary(now, 4.1)
         self.assertIsNone(result['training_error'])
         self.assertAlmostEqual(result['active']['working']['max_abs_age_s'], .02)
-        # Depois do início, atraso real continua sendo uma falha, sem reiniciar o histórico.
+        # Um pico é excluído; a falha só interrompe se persistir.
         monitor.observe('working', stamps+.1, now+1., 5.1)
-        self.assertIn('atrasada', monitor.summary(now+1., 5.1)['training_error'])
+        self.assertIsNone(monitor.summary(now+1., 5.1)['training_error'])
+        self.assertIn('persistiu', monitor.summary(now+4., 8.1)['training_error'])
 
     def test_future_timestamp_direction_and_stale_stream_are_visible(self):
         set_source(self.cfg, 'simulator')
@@ -315,14 +316,17 @@ class LSLTimingTests(unittest.TestCase):
         self.assertIsNone(result['training_error'])
         self.assertIn('350.2 ms', result['current_health']['reason'])
 
-    def test_received_batch_really_older_than_limit_still_blocks_after_protocol_begins(self):
+    def test_isolated_old_batch_is_excluded_without_ending_protocol(self):
         monitor, last = self.healthy_protocol()
         stamps = last+np.arange(1, 51)/500
         monitor.observe('working', stamps, stamps[-1]+.2672, 3.3465607322)
         result = monitor.summary(stamps[-1]+.2672, 3.3465607322)
-        self.assertIn('267.2 ms', result['training_error'])
-        self.assertIn('relógio de recepção', result['training_error'])
+        self.assertIsNone(result['training_error'])
+        self.assertIn('267.2 ms', result['current_health']['reason'])
+        self.assertTrue(result['recovery']['excluded_intervals'])
         self.assertFalse(result['current_health']['waiting_for_batch'])
+        monitor.finish(stamps[-1]+.4, 3.5)
+        self.assertIsNone(monitor.summary(999., 999.)['training_error'])
 
     def test_protocol_resumes_with_new_fresh_batch_without_repeating_startup_stability(self):
         monitor, last = self.healthy_protocol()

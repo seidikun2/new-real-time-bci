@@ -153,4 +153,10 @@ class PersistentOperatorTests(unittest.TestCase):
         self.op.update_timing_preview({'rows': [], 'options': {'max_age_s': .25}, 'phase': 'protocol',
                                       'health': {'reason': 'Aguardando novo lote.', 'waiting_for_batch': True}})
         self.assertIn('não invalida os dados recebidos', self.op.timing_preview.status.get())
+        from bci_core.recovery import RecoveryAudit
+        recovery = RecoveryAudit(3.)
+        recovery.observe('working', 'Pico de atraso', [1.], 1., 'protocol')
+        self.op.update_timing_preview({'rows': [], 'options': {'max_age_s': .25}, 'phase': 'protocol',
+                                      'health': {'reason': 'Recuperando aquisição.'}, 'recovery': recovery.summary(1.1)})
+        self.assertIn('interrompe se persistir por 3 s', self.op.timing_preview.metrics.get())
         self.assert_one_window()

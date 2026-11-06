@@ -132,6 +132,12 @@ def write_report(cfg, report, evaluation, signal_file, folder):
     if not alerts:
         alerts = '<li>Nenhum alerta nos critérios aplicados a este bloco.</li>'
     notes = ''.join(f'<p>{escape(value)}</p>' for value in report.get('observations', []))
+    usable = evaluation.get('usable_data', {})
+    if usable:
+        notes += (f"<p>Treino: {usable['usable_samples']}/{usable['total_samples']} amostras utilizáveis; "
+                  f"{usable['excluded_samples']} excluídas. {usable['windows_used']} janelas de "
+                  f"{usable['trials_used']}/{usable['trials_total']} tentativas. Os arquivos de coleta estão preservados. "
+                  'A acurácia refere-se às janelas utilizadas.</p>')
     rows = []
     for row in report['channels']:
         suspect = bool(row['reasons'])

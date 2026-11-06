@@ -159,7 +159,11 @@ class BlockRecorder:
                             received_lsl = local_clock()
                             unix = time.time()
                             correction = float(current.time_correction(timeout=0.)) if kind == 'raw' else 0.
-                            row = self.timing.observe(kind, stamps, received_lsl, received-self.timing.origin, correction)
+                            converted = np.asarray(values, float)
+                            if kind == 'working':
+                                converted = converted[:, indices] * factors
+                            invalid = int(np.sum(~np.isfinite(converted).all(axis=1))) if kind == 'working' else 0
+                            row = self.timing.observe(kind, stamps, received_lsl, received-self.timing.origin, correction, invalid)
                             row.update(received_unix_s=unix,
                                        receive_gap_s=received-last_received[kind] if kind in last_received else None,
                                        queue_batches=batches.qsize(), write_lag_s=None)
@@ -171,9 +175,6 @@ class BlockRecorder:
                                     self.max_receive_pause_s = max(self.max_receive_pause_s, received-self.last_sample_at)
                                 self.last_sample_at = received  # Recepção, antes de qualquer escrita em disco.
                                 self.received_samples += len(stamps)
-                            converted = np.asarray(values, float)
-                            if kind == 'working':
-                                converted = converted[:, indices] * factors
                             if kind == 'working':
                                 with self.preview_lock:
                                     self.preview_values.extend(converted)
@@ -260,9 +261,10 @@ class BlockRecorder:
 
     def timing_preview(self):
         with self.timing.lock:
+            elapsed = self.timing.finished[1] if self.timing.finished is not None else time.monotonic()-self.timing.origin
             return dict(rows=[row.copy() for row in self.timing_history], options=self.timing_options,
                         health=self.timing_health(), phase=self.timing.phase, protocol_started_s=self.timing.protocol_started_s,
-                        elapsed_s=self.timing.finished[1] if self.timing.finished is not None else time.monotonic()-self.timing.origin)
+                        elapsed_s=elapsed, recovery=self.timing.recovery.summary(elapsed))
 
     def snapshot(self):
         with self.preview_lock:

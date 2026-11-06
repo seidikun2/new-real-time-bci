@@ -6,6 +6,7 @@ from pylsl import proc_clocksync, proc_dejitter, proc_monotonize
 
 from .acquisition import source_name
 from .data import timestamp_integrity
+from .recovery import RecoveryAudit
 
 
 def timing_options(cfg):
@@ -22,6 +23,7 @@ def timing_options(cfg):
                   max_backward_s=float(options.get('max_backward_s', .02)),
                   max_gap_s=float(options.get('max_gap_s', .1)),
                   max_age_s=float(options.get('max_age_s', .25)),
+                  max_bad_duration_s=float(options.get('max_bad_duration_s', 3.)),
                   warmup_s=float(options.get('warmup_s', 5.)) if external else 1.,
                   stable_s=float(options.get('stable_s', 2.)) if external else 0.,
                   queue_batches=int(options.get('queue_batches', 128)))
@@ -29,6 +31,8 @@ def timing_options(cfg):
         raise ValueError('Os limites temporais devem ser positivos e finitos.')
     if not 0 <= result['warmup_s'] <= 60 or not 0 <= result['stable_s'] <= 30 or not 1 <= result['queue_batches'] <= 1024:
         raise ValueError('Use warmup_s entre 0 e 60, stable_s entre 0 e 30 e queue_batches entre 1 e 1024.')
+    if not np.isfinite(result['max_bad_duration_s']) or not 0 <= result['max_bad_duration_s'] <= 60:
+        raise ValueError('max_bad_duration_s deve estar entre 0 e 60; zero interrompe no primeiro erro.')
     return result
 
 
@@ -148,13 +152,15 @@ class TimingMonitor:
         self.phase = 'warmup'
         self.protocol_started_s = None
         self.finished = None
+        self.recovery = RecoveryAudit(options.get('max_bad_duration_s', 3.))
         self.health = {kind: {'since': None, 'error': 'Aguardando amostras.', 'stamp': None, 'received_s': None} for kind in ['working', 'raw']}
 
-    def observe(self, kind, stamps, received_lsl, elapsed, correction=0.):
+    def observe(self, kind, stamps, received_lsl, elapsed, correction=0., invalid_samples=0):
         with self.lock:
             values = {'working': np.asarray(stamps)} if kind == 'working' else {
                 'source': np.asarray(stamps), 'clock_synced': np.asarray(stamps)+correction}
             batch = {key: TimestampAudit() for key in self.audits}
+            previous = {key: self.audits[key].previous for key in values}
             for key, times in values.items():
                 batch[key].previous = self.audits[key].previous
                 batch[key].update(times)
@@ -166,6 +172,16 @@ class TimingMonitor:
                         audit.observe_age(received_lsl-times[-1], elapsed)
             options = self.options if kind == 'raw' else {**self.options, 'audit': False}
             error = audit_training_error(batch['source'], batch['clock_synced'], batch['working'], options)
+            if invalid_samples:
+                error = f'EEG de trabalho contém {invalid_samples} amostras com NaN/Inf; trecho excluído.'
+            key = 'working' if kind == 'working' else 'clock_synced'
+            bounds = values[key]
+            if previous[key] is not None:
+                bounds = np.r_[previous[key], bounds]
+            strict = (kind == 'raw' and options.get('strict_raw_timestamps', False)
+                      and any(a.max_backward_s > options['max_backward_s'] or a.max_gap_s > options['max_gap_s']
+                              for a in [batch['source'], batch['clock_synced']]))
+            self.recovery.observe(kind, error, bounds, elapsed, self.phase, strict)
             state = self.health[kind]
             if state['received_s'] is not None and elapsed-state['received_s'] > self.options['max_age_s']:
                 state['since'] = None
@@ -187,6 +203,12 @@ class TimingMonitor:
             for kind in (['working', 'raw'] if self.options['audit'] else ['working']):
                 state = self.health[kind]
                 if state['error'] or state['stamp'] is None:
+                    event = self.recovery.open.get(kind)
+                    if state['error'] and event is not None and self.active is not None:
+                        duration = max(0., elapsed-event['start_elapsed_s'])
+                        return dict(ready=False, stable_for_s=0., waiting_for_batch=False, recovering=True,
+                                    reason=f"Recuperando aquisição ({duration:.1f}/{self.recovery.limit:g} s). "
+                                           f"Trecho excluído do treino. {state['error']}")
                     return dict(ready=False, stable_for_s=0., waiting_for_batch=state['stamp'] is None,
                                 reason=state['error'] or 'Aguardando amostras.')
                 age = now_lsl-state['stamp']
@@ -222,12 +244,21 @@ class TimingMonitor:
 
     def summary(self, now_lsl, elapsed):
         with self.lock:
+            if self.finished is not None:
+                now_lsl, elapsed = self.finished
             def summaries(audits):
                 return {key: value.summary(include_age=key != 'source') for key, value in audits.items()}
             selected = self.active if self.active is not None else self.audits
-            error = audit_training_error(selected['source'], selected['clock_synced'], selected['working'],
-                                         self.options, require_source=self.active is None)
+            error = (self.recovery.check(elapsed, active=True) if self.active is not None else
+                     audit_training_error(selected['source'], selected['clock_synced'], selected['working'], self.options))
             health = self.current_health(now_lsl, elapsed)
+            recovery = self.recovery.summary(elapsed)
+            warnings = audit_warnings(selected['source'], selected['clock_synced'], self.options)
+            if recovery['episodes']:
+                warnings.append(f"Aquisição: {len(recovery['episodes'])} episódios com trechos excluídos do treino; "
+                                f"lotes afetados: trabalho {recovery['bad_batches']['working']}/{recovery['batches']['working']}, "
+                                f"auditoria {recovery['bad_batches']['raw']}/{recovery['batches']['raw']}. "
+                                f"Falha contínua por {self.recovery.limit:g} s interrompe o bloco. Consulte os intervalos no relatório.")
             # A idade cresce enquanto pull_chunk aguarda o próximo lote. Isso descreve
             # disponibilidade atual, não a integridade dos horários já recebidos.
             # Estabilidade é exigida antes dos cues; ausência prolongada tem seu watchdog.
@@ -235,5 +266,4 @@ class TimingMonitor:
                         capture_ended_s=self.finished[1] if self.finished is not None else None,
                         validation_scope=self.phase if self.active is not None else 'warmup',
                         active=summaries(self.active) if self.active is not None else {},
-                        current_health=health, training_error=error,
-                        warnings=audit_warnings(selected['source'], selected['clock_synced'], self.options))
+                        current_health=health, training_error=error, recovery=recovery, warnings=warnings)

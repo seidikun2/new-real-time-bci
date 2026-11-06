@@ -99,8 +99,9 @@ pelo LSL, além de pausas de recepção e atrasos de escrita. A cópia `*_raw_ee
 preserva o relógio original e todos os canais na escala do transmissor; ela usa
 outro inlet e não deve ser pareada por índice com o CSV de trabalho.
 
-O receptor mantém obrigatórios os critérios dos dados de trabalho e da referência
-de relógio. Recuos/lacunas originais são avisos por padrão, preservados no relatório
+O receptor marca trechos que violam os critérios dos dados de trabalho e da
+referência de relógio. Episódios pontuais são excluídos do treino; falha contínua
+por `acquisition_timing.max_bad_duration_s` (3 s) interrompe o bloco. Recuos/lacunas originais são avisos por padrão, preservados no relatório
 e no modelo; `acquisition_timing.strict_raw_timestamps: true` também os torna
 bloqueantes. A regularização não comprova temporização física do EEG. Valide na
 estação real se a taxa configurada no eego corresponde à taxa anunciada no LSL.
@@ -111,8 +112,10 @@ e lentidão de escrita. Os máximos da acomodação inicial ficam separados do p
 com estímulos; o protocolo aguarda estabilidade recente antes de começar. Para
 investigar, envie `quality.json` e `timing_batches.csv` da pasta do relatório:
 esse CSV contém somente telemetria por lote e não os valores EEG.
-`batch_warning` registra os achados da fonte; `batch_error` registra falhas que
-impedem a operação segundo a política escolhida.
+`batch_warning` registra os achados da fonte; `batch_error` marca o motivo da
+exclusão de um lote, mesmo quando o bloco continua. O resumo `recovery` registra
+episódios, duração, contagens e intervalos excluídos. O relatório disponibiliza
+`timing_excluded.csv`; treino/CV usam segmentos válidos com filtros independentes.
 
 Uma consulta entre lotes pode mostrar a última amostra acima do limite de idade,
 mesmo que cada lote tenha chegado recente. Essa espera é disponibilidade, exibida

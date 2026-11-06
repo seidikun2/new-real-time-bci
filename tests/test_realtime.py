@@ -63,14 +63,17 @@ class RealtimeTests(unittest.TestCase):
         self.assertAlmostEqual(stamp, .69)
         self.assertEqual(monitor.snapshot()['gap_resets'], 1)
 
-    def test_invalid_values_and_timestamps_are_not_made_usable_by_drop_policy(self):
+    def test_invalid_values_and_timestamps_are_discarded_before_a_new_window(self):
         for stamps in [[1., 1.], [1., .99], [1., np.nan]]:
             buffer, _ = self.make_buffer()
-            with self.subTest(stamps=stamps), self.assertRaises(ValueError):
+            with self.subTest(stamps=stamps):
                 buffer.ingest(np.ones((2, 2)), stamps, 1.)
+                self.assertIsNone(buffer.latest(0))
+                buffer.ingest(np.ones((20, 2)), 2.+np.arange(20)/100, 2.2)
+                self.assertIsNotNone(buffer.latest(0))
         buffer, _ = self.make_buffer()
-        with self.assertRaises(ValueError):
-            buffer.ingest(np.full((2, 2), np.nan), [1., 1.01], 1.02)
+        buffer.ingest(np.full((2, 2), np.nan), [1., 1.01], 1.02)
+        self.assertIsNone(buffer.latest(0))
 
     def test_slow_classifier_skips_windows_rejects_old_results_and_recovers(self):
         cfg = load_config(str(ROOT/'config.yaml'))

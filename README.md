@@ -154,13 +154,14 @@ duplicações, interrupções e erros de marcadores continuam gerando alertas.
 O gráfico bruto usa escala robusta por canal e limita a exibição de picos para
 facilitar a leitura; os valores originais e o pico a pico ficam nos CSVs/tabela.
 
-Nenhum canal ou trial é removido automaticamente. Corrija eletrodos/referência
-quando necessário; para uma seleção deliberada de canais, use `select_channels`
+Essas heurísticas não removem canais automaticamente. Trechos temporalmente
+inválidos ou não finitos são excluídos do treino; tentativas sem janelas utilizáveis
+não entram na CV. Corrija eletrodos/referência quando necessário; para uma seleção deliberada de canais, use `select_channels`
 e retreine. Intervalos longos podem representar perda **ou jitter dos timestamps**;
 a estimativa de amostras ausentes não é um contador do dispositivo. Janelas de
 treino não atravessam intervalos maiores que 20 ms (ou 1,5 amostra, se maior).
-A inferência interrompe o bloco em descontinuidades maiores que 100 ms, NaN/Inf,
-falha de componentes ou interrupção prolongada da aquisição.
+A inferência descarta trechos inválidos e recompõe a janela. Problemas de aquisição
+contínuos por 3 s, falhas de componentes e ausência prolongada de EEG encerram o bloco.
 
 Para EEG externo, a recepção usa **clocksync + dejitter + monotonize do próprio LSL**.
 O arquivo `*_signal_*.csv` guarda os horários de trabalho. Um segundo inlet grava
@@ -176,12 +177,25 @@ sem confundir uma escrita lenta com ausência de EEG. O JSON e o relatório sepa
 pausas de recepção, atraso de gravação, amostras recebidas/gravadas e recuos nos
 horários originais, sincronizados e de trabalho.
 
-Os limites em `acquisition_timing` separam operação e auditoria. Timestamps de
-trabalho não finitos, duplicados ou em recuo, intervalos de trabalho acima de
-100 ms e distância ao relógio de recepção acima de 250 ms impedem o treino.
-Horários originais não finitos ou referência original sincronizada distante
-mais de 250 ms também impedem. Durante o protocolo, essas falhas interrompem
-o bloco; no teste de aquisição são diagnosticadas sem encerrar a coleta.
+Os limites em `acquisition_timing` marcam trechos suspeitos: timestamps de trabalho
+não finitos, duplicados ou em recuo, lacunas acima de 100 ms, amostras com NaN/Inf
+e distância ao relógio de recepção acima de 250 ms. Horários originais não finitos
+ou referência original sincronizada distante mais de 250 ms também são marcados.
+
+Um episódio pontual **não encerra o bloco**. O receptor guarda as amostras e marca
+o intervalo para exclusão do treino. `max_bad_duration_s: 3.0` interrompe quando
+um fluxo permanece com problema por 3 s consecutivos, mesmo recebendo dados.
+Lotes saudáveis encerram o episódio; picos separados não se acumulam como uma
+falha contínua. `max_bad_duration_s: 0` restaura o bloqueio no primeiro erro.
+O teste de aquisição registra esses episódios sem encerrar por eles.
+
+Para novas coletas, treino e CV usam somente janelas inteiras em segmentos
+utilizáveis. O filtro causal é reiniciado em cada segmento; nenhuma janela cruza
+um trecho excluído, uma lacuna ou a acomodação inválida. Os CSVs permanecem
+inalterados. O relatório mostra amostras/janelas/tentativas aproveitadas, episódios,
+durações e `timing_excluded.csv`. Se as exclusões deixarem classes sem janelas,
+não há modelo; poucas tentativas podem impedir a estimativa de CV. A classificação
+continua no espaço completo e o modelo ativo no online não é substituído.
 
 Esses limites medem os horários **na chegada do lote**. Entre lotes, a idade da
 última amostra aumenta enquanto o receptor espera: isso é disponibilidade atual,
@@ -199,15 +213,15 @@ tempo vetar todo jitter original impedia conduzir blocos com o fluxo de trabalho
 saudável. Os avisos continuam no relatório e nos metadados do modelo, inclusive
 ao selecioná-lo. Eles não comprovam temporização física válida para interpretar
 acurácia. `strict_raw_timestamps: true` restaura o veto também por esses achados
-originais. Nenhum limite do fluxo de trabalho é relaxado por essa opção.
+originais. Essa opção é independente da recuperação dos dados de trabalho.
 Ausência prolongada de amostras, erro de escrita ou fila cheia continuam encerrando
 o teste e preservando os dados parciais. Essa política não corrige arquivos
 antigos nem completa tentativas que não foram coletadas. As amostras dos 5 s de assentamento
 antes dos cues são preservadas. Após esse período, o protocolo espera pelo menos
 `stable_s: 2` segundos recentes dentro dos limites, até o timeout de inicialização.
 Picos ocorridos apenas na acomodação continuam visíveis, mas não ficam como um
-veto permanente depois de estabilizar. A validação durante o protocolo é separada
-e permanece estrita. Para diagnóstico técnico, `method: clocksync`
+veto permanente depois de estabilizar. Durante o protocolo, os trechos afetados
+são excluídos e a persistência da falha é verificada. Para diagnóstico técnico, `method: clocksync`
 desativa apenas dejitter/monotonize; os limites e a auditoria continuam ativos.
 
 No VS Code, use **BCI: verificar aquisição EEG (1 min)**, **(5 min)** ou **(10 min)**
@@ -252,8 +266,9 @@ As janelas puladas, amostras descartadas no decoder e resultados vencidos são
 contados. Amostras antigas represadas são descartadas somente no decoder. Após
 descarte ou lacuna, filtro e janela são reiniciados e o decoder aguarda uma janela
 completa. O recorder preserva sua cópia independente; sua fila limitada e os
-checks de integridade continuam ativos. A política não ignora NaN/Inf, timestamps
-de trabalho inválidos, erros de gravação ou ausência prolongada de EEG.
+checks de integridade continuam ativos. NaN/Inf e timestamps inválidos são
+descartados do processamento online, com reinício da janela. Erros de gravação,
+fila cheia e ausência prolongada de EEG continuam interrompendo a coleta.
 
 Na aba **Sincronização**, durante o online, confira custo do último cálculo,
 idade do EEG na saída, descartes e idade no comando de controle. O relatório

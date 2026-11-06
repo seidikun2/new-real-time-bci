@@ -83,15 +83,16 @@ protocol:
   min_cv_accuracy      : null
 
 # EEG externo: pós-processamento padrão LSL e cópia independente sem regularização.
-# Critérios do fluxo de trabalho são obrigatórios; horários originais permanecem auditados.
+# Trechos afetados são excluídos; falhas persistentes interrompem. Originais permanecem auditados.
 acquisition_timing:
   method: dejitter        # dejitter = clocksync + dejitter + monotonize; clocksync = apenas relógio
   warmup_s: 5.0          # antes dos estímulos; as amostras são preservadas
   stable_s: 2.0          # estabilidade recente exigida antes dos estímulos, após o warmup
   strict_raw_timestamps: false  # true também interrompe por recuos/lacunas na auditoria original
   max_backward_s: 0.02   # limiar de alerta da fonte; bloqueia somente no modo estrito
-  max_gap_s: 0.10        # bloqueio no trabalho; alerta na fonte (ou bloqueio estrito)
-  max_age_s: 0.25        # distância máxima entre última amostra recebida e relógio local
+  max_gap_s: 0.10        # marca trecho no trabalho; alerta na fonte (ou bloqueio estrito)
+  max_age_s: 0.25        # marca trecho que chega distante do relógio local
+  max_bad_duration_s: 3.0 # interrompe se o problema persistir; zero restaura bloqueio imediato
   queue_batches: 128     # fila limitada; estouro é falha explícita, nunca descarte silencioso
 
 # #############################################################################
