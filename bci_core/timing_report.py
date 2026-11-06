@@ -90,6 +90,9 @@ def timing_report(audit, folder):
             '<p>Desvio = relógio local LSL na recepção − timestamp da última amostra do lote. '
             '<strong>Positivo: amostra atrasada. Negativo: horário no futuro.</strong> '
             f'As linhas vermelhas marcam ±{limit_ms:.0f} ms. Este desvio não mede apenas atraso de rede.</p>'
+            '<p>A idade da última amostra enquanto se aguarda outro lote é uma medida de disponibilidade. '
+            'Essa espera, isoladamente, não invalida os dados recebidos nem interrompe o protocolo. '
+            'Os limites dos horários na chegada continuam verificados; ausência prolongada de EEG encerra a coleta.</p>'
             '<div class="table-wrap"><table><thead><tr><th>Período</th><th>Inlet</th><th>Mínimo (ms)</th><th>Máximo (ms)</th>'
             '<th>Maior distância (ms)</th><th>Recuos</th></tr></thead><tbody>'+''.join(rows)+'</tbody></table></div>'
             +graph+downloads+

@@ -283,3 +283,55 @@ class LSLTimingTests(unittest.TestCase):
         health=monitor.current_health(stamps[-1]+.02,elapsed+.3)
         self.assertFalse(health['ready'])
         self.assertEqual(health['stable_for_s'],0.)
+
+    def healthy_protocol(self):
+        set_source(self.cfg, 'eego')
+        monitor = TimingMonitor(timing_options(self.cfg))
+        for index in range(31):
+            now = 100.+index*.1
+            stamps = now-.04-np.arange(49, -1, -1)/500
+            for kind in ['working', 'raw']:
+                monitor.observe(kind, stamps, now, index*.1)
+        self.assertTrue(monitor.current_health(now, 3.)['ready'])
+        monitor.begin()
+        return monitor, float(stamps[-1])
+
+    def test_reported_267ms_poll_age_is_availability_not_invalid_received_eeg(self):
+        monitor, last = self.healthy_protocol()
+        stamps = last+np.arange(1, 51)/500
+        for kind in ['working', 'raw']:
+            monitor.observe(kind, stamps, stamps[-1]+.1206392678, 3.2)
+        # Reproduz o relatório: lote chegou com até 120,6 ms; uma consulta posterior
+        # vê a mesma última amostra envelhecer para 267,2 ms enquanto aguarda dados.
+        result = monitor.summary(stamps[-1]+.2672, 3.3465607322)
+        self.assertFalse(result['current_health']['ready'])
+        self.assertTrue(result['current_health']['waiting_for_batch'])
+        self.assertIn('267.2 ms', result['current_health']['reason'])
+        self.assertIsNone(result['training_error'])
+        self.assertAlmostEqual(result['active']['working']['max_abs_age_s'], .1206392678)
+        # A espera de encerramento também não pode criar um erro retrospectivo.
+        monitor.finish(stamps[-1]+.3502, 3.4295607322)
+        result = monitor.summary(999., 999.)
+        self.assertIsNone(result['training_error'])
+        self.assertIn('350.2 ms', result['current_health']['reason'])
+
+    def test_received_batch_really_older_than_limit_still_blocks_after_protocol_begins(self):
+        monitor, last = self.healthy_protocol()
+        stamps = last+np.arange(1, 51)/500
+        monitor.observe('working', stamps, stamps[-1]+.2672, 3.3465607322)
+        result = monitor.summary(stamps[-1]+.2672, 3.3465607322)
+        self.assertIn('267.2 ms', result['training_error'])
+        self.assertIn('relógio de recepção', result['training_error'])
+        self.assertFalse(result['current_health']['waiting_for_batch'])
+
+    def test_protocol_resumes_with_new_fresh_batch_without_repeating_startup_stability(self):
+        monitor, last = self.healthy_protocol()
+        self.assertTrue(monitor.current_health(last+.3, 3.26)['waiting_for_batch'])
+        stamps = last+np.arange(1, 201)/500
+        for kind in ['working', 'raw']:
+            monitor.observe(kind, stamps, stamps[-1]+.04, 3.4)
+        result = monitor.summary(stamps[-1]+.04, 3.4)
+        self.assertTrue(result['current_health']['ready'])
+        self.assertEqual(result['current_health']['stable_for_s'], 0.)
+        self.assertFalse(result['current_health']['waiting_for_batch'])
+        self.assertIsNone(result['training_error'])

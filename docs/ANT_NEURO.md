@@ -114,6 +114,11 @@ esse CSV contém somente telemetria por lote e não os valores EEG.
 `batch_warning` registra os achados da fonte; `batch_error` registra falhas que
 impedem a operação segundo a política escolhida.
 
+Uma consulta entre lotes pode mostrar a última amostra acima do limite de idade,
+mesmo que cada lote tenha chegado recente. Essa espera é disponibilidade, exibida
+com `waiting_for_batch` no resumo; não é convertida em erro dos dados gravados.
+Os limites na chegada e o watchdog de ausência prolongada continuam ativos.
+
 ## Evidência de teste
 
 Foram verificados os perfis 64 canais/500 Hz e 32 canais/1000 Hz, seleção por nome

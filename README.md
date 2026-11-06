@@ -183,6 +183,15 @@ Horários originais não finitos ou referência original sincronizada distante
 mais de 250 ms também impedem. Durante o protocolo, essas falhas interrompem
 o bloco; no teste de aquisição são diagnosticadas sem encerrar a coleta.
 
+Esses limites medem os horários **na chegada do lote**. Entre lotes, a idade da
+última amostra aumenta enquanto o receptor espera: isso é disponibilidade atual,
+não uma falha retrospectiva das amostras já recebidas. A espera isolada aparece
+na aba Sincronização e não interrompe o protocolo nem impede o treino. Depois
+dos cues, um lote recente permite retomar sem repetir o assentamento inicial.
+Ausência contínua de recepção por `protocol.signal_stall_s` (padrão **3 s**)
+continua encerrando o bloco. O controlador verifica a idade do EEG em cada
+comando e volta a repouso quando não há previsão dentro dos 500 ms do online.
+
 Recuos originais acima de 20 ms e intervalos originais acima de 100 ms são
 **avisos de auditoria por padrão**, quando o fluxo regularizado e a referência
 de relógio permanecem dentro dos critérios operacionais. Usar dejitter e ao mesmo

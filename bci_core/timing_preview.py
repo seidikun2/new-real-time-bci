@@ -22,6 +22,8 @@ class TimingPreview:
         self.data = data
         phase = {'warmup':'Acomodação inicial', 'protocol':'Protocolo', 'diagnostic':'Teste de aquisição'}.get(data['phase'], data['phase'])
         self.status.set(f"{phase} · {data['health']['reason']}")
+        if data['phase'] != 'warmup' and data['health'].get('waiting_for_batch'):
+            self.status.set(self.status.get() + ' A espera isolada não invalida os dados recebidos.')
         values = []
         for kind, name in [('working', 'Trabalho'), ('raw', 'Original sincronizado')]:
             rows = [row for row in data['rows'] if row['stream'] == kind]

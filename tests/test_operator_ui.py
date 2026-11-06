@@ -150,4 +150,7 @@ class PersistentOperatorTests(unittest.TestCase):
                                       'health': {'reason': 'Online'}, 'decoder': monitor.snapshot()})
         self.assertIn('70.0 ms', self.op.timing_preview.metrics.get())
         self.assertIn('repouso por falta de previsão recente', self.op.timing_preview.metrics.get())
+        self.op.update_timing_preview({'rows': [], 'options': {'max_age_s': .25}, 'phase': 'protocol',
+                                      'health': {'reason': 'Aguardando novo lote.', 'waiting_for_batch': True}})
+        self.assertIn('não invalida os dados recebidos', self.op.timing_preview.status.get())
         self.assert_one_window()

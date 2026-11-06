@@ -187,22 +187,26 @@ class TimingMonitor:
             for kind in (['working', 'raw'] if self.options['audit'] else ['working']):
                 state = self.health[kind]
                 if state['error'] or state['stamp'] is None:
-                    return dict(ready=False, stable_for_s=0., reason=state['error'] or 'Aguardando amostras.')
+                    return dict(ready=False, stable_for_s=0., waiting_for_batch=state['stamp'] is None,
+                                reason=state['error'] or 'Aguardando amostras.')
                 age = now_lsl-state['stamp']
                 if not np.isfinite(age) or abs(age) > self.options['max_age_s']:
                     state['since'] = None
                     label = 'de trabalho' if kind == 'working' else 'original sincronizada'
-                    return dict(ready=False, stable_for_s=0., reason=f"Última amostra {label}: {age_description(age)}.")
+                    return dict(ready=False, stable_for_s=0., waiting_for_batch=True,
+                                reason=f"Aguardando novo lote. Última amostra {label}: {age_description(age)}.")
                 if state['since'] is None:
-                    return dict(ready=False, stable_for_s=0., reason='Aguardando novo lote para confirmar estabilidade.')
+                    return dict(ready=False, stable_for_s=0., waiting_for_batch=True,
+                                reason='Aguardando novo lote para confirmar estabilidade.')
                 durations.append(max(0., elapsed-state['since']))
             stable = min(durations)
-            ready = stable >= self.options['stable_s']
+            required = self.options['stable_s'] if self.active is None else 0.
+            ready = stable >= required
             selected = self.active if self.active is not None else self.audits
             warnings = audit_warnings(selected['source'], selected['clock_synced'], self.options)
             message = 'Fluxo de trabalho estável; fonte com alertas temporais.' if warnings else 'Horários de trabalho estáveis.'
-            return dict(ready=ready, stable_for_s=stable,
-                        reason=message if ready else f"Estabilizando: {stable:.1f} de {self.options['stable_s']:g} s.")
+            return dict(ready=ready, stable_for_s=stable, waiting_for_batch=False,
+                        reason=message if ready else f"Estabilizando: {stable:.1f} de {required:g} s.")
 
     def begin(self, diagnostic=False):
         with self.lock:
@@ -224,8 +228,9 @@ class TimingMonitor:
             error = audit_training_error(selected['source'], selected['clock_synced'], selected['working'],
                                          self.options, require_source=self.active is None)
             health = self.current_health(now_lsl, elapsed)
-            if self.active is not None and not health['ready'] and not error:
-                error = health['reason']
+            # A idade cresce enquanto pull_chunk aguarda o próximo lote. Isso descreve
+            # disponibilidade atual, não a integridade dos horários já recebidos.
+            # Estabilidade é exigida antes dos cues; ausência prolongada tem seu watchdog.
             return dict(**summaries(self.audits), phase=self.phase, protocol_started_s=self.protocol_started_s,
                         capture_ended_s=self.finished[1] if self.finished is not None else None,
                         validation_scope=self.phase if self.active is not None else 'warmup',
