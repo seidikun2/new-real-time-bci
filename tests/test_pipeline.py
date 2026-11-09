@@ -197,12 +197,12 @@ class PipelineTests(unittest.TestCase):
         fake = {'complete': True, 'markers_file': 'm', 'signal_file': 's'}
         with patch('main.choose_model', return_value='/chosen/model'), patch('main.run_block', return_value=fake) as run, patch('main.analyze_block', return_value=({}, {'cv': {'acc_mean': .8}})) as analyze:
             run_experiment(cfg, operator)
-        self.assertEqual(run.call_count, 4)
-        self.assertEqual(analyze.call_count, 4)
+        self.assertEqual(run.call_count, 5)
+        self.assertEqual(analyze.call_count, 5)
         operator.confirm.assert_not_called()
         operator.notify.assert_not_called()
-        self.assertEqual([call.args[1] for call in run.call_args_list], ['train', 'train', 'online', 'online'])
-        self.assertEqual([call.args[2] for call in run.call_args_list], [None, None, '/chosen/model', '/chosen/model'])
+        self.assertEqual([call.args[1] for call in run.call_args_list], ['resting', 'train', 'train', 'online', 'online'])
+        self.assertEqual([call.args[2] for call in run.call_args_list], [None, None, None, '/chosen/model', '/chosen/model'])
 
     def test_acquisition_failure_is_incomplete_and_preserves_diagnostics(self):
         from main import run_block

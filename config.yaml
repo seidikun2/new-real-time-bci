@@ -34,6 +34,10 @@ runtime:
   source           : eego        # null usa simulate_signal; simulator | hiamp | eego | lsl
   simulate_signal  : true        # true = simulação; false = g.HIamp
 
+resting_state:
+  enabled: true                 # antes da execução motora; comando pelo experimentador
+  duration_s: 45.0               # por condição; 30 ou 45 s também disponíveis na interface
+
 protocol:
   stage          : "single_target"  # single_target | two_legs
   start_phase    : "auto"              # auto | execution | imagery | online
@@ -71,7 +75,7 @@ protocol:
       label         : "Online duas pernas · bloco 2"
       session_type  : "IM_online_duas_pernas_sem_feedback"
 
-  # Perfil atual: 5 tentativas por classe = 15 trials; use 15 para 45 trials.
+  # Perfil atual: 20 tentativas por classe = 60 trials; use 15 para 45 trials.
   trials_per_class : 20
   baseline_s       : 3.0
   attention_s      : 2.0

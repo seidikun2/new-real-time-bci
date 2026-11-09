@@ -1,6 +1,7 @@
 """Uma janela para preparar, coletar, revisar e avançar o protocolo."""
 import copy
 import json
+import math
 import threading
 import time
 import webbrowser
@@ -12,6 +13,7 @@ from .acquisition import SOURCES, source_name, set_source, discover_signals
 from .storage import prepare_data_root
 from .signal_preview import SignalPreview
 from .timing_preview import TimingPreview
+from .resting_state import RESTING_SESSION, resting_options
 
 STAGES = {'single_target': 'Etapa 1 · alvo e repouso', 'two_legs': 'Etapa 2 · duas pernas e repouso'}
 PHASES = {'auto': 'Protocolo completo', 'execution': 'Execução motora', 'imagery': 'Imagética motora', 'online': 'Online'}
@@ -35,6 +37,8 @@ class Operator:
         style.configure('TLabel', background='#f4f6f9', foreground='#1e3448')
         style.configure('Title.TLabel', font=(family, 23, 'bold'))
         style.configure('Muted.TLabel', foreground='#63768a')
+        style.configure('Resting.TLabel', font=(family, 17, 'bold'), foreground='#22698b')
+        style.configure('Countdown.TLabel', font=(family, 30, 'bold'))
         style.configure('TButton', padding=(16, 10))
         style.configure('Primary.TButton', background='#22698b', foreground='white')
         style.map('Primary.TButton', background=[('active', '#185570')])
@@ -52,7 +56,7 @@ class Operator:
         self.parameters = ttk.Button(header, text='Parâmetros', command=self.configure_parameters)
         self.parameters.pack(side='right')
         self.steps = tk.StringVar()
-        ttk.Label(self.shell, textvariable=self.steps, style='Muted.TLabel').pack(anchor='w', pady=(14, 10))
+        ttk.Label(self.shell, textvariable=self.steps, style='Muted.TLabel', wraplength=970).pack(anchor='w', pady=(14, 10))
         self.title = tk.StringVar()
         ttk.Label(self.shell, textvariable=self.title, style='Title.TLabel').pack(anchor='w')
         self.subtitle = tk.StringVar()
@@ -205,8 +209,11 @@ class Operator:
         phase = self.tk.StringVar(value=PHASES[candidate.protocol.start_phase])
         self.ttk.Label(frame, text='Começar em').grid(row=4, column=0, sticky='w', pady=8)
         self.ttk.Combobox(frame, textvariable=phase, values=list(PHASES.values()), state='readonly').grid(row=4, column=1, sticky='ew')
+        eyes_duration = self.tk.StringVar(value=f"{resting_options(candidate)['duration_s']:g}")
+        self.ttk.Label(frame, text='Olhos abertos / fechados (s por condição)').grid(row=5, column=0, sticky='w', pady=8)
+        self.ttk.Combobox(frame, textvariable=eyes_duration, values=['30', '45'], state='readonly').grid(row=5, column=1, sticky='ew')
         feedback = self.tk.StringVar(value='A taxa e a quantidade reais serão lidas do stream. Não é necessário informar unidade.')
-        self.ttk.Label(frame, textvariable=feedback, wraplength=680).grid(row=5, columnspan=2, sticky='w', pady=15)
+        self.ttk.Label(frame, textvariable=feedback, wraplength=680).grid(row=6, columnspan=2, sticky='w', pady=15)
         def discover():
             try:
                 streams = discover_signals()
@@ -231,12 +238,13 @@ class Operator:
                                                                    receive_by='index' if indices else 'name', index_base=1)
                 candidate.protocol.start_phase = next(key for key, value in PHASES.items() if value == phase.get())
                 candidate._raw_config['protocol']['start_phase'] = candidate.protocol.start_phase
+                candidate._raw_config.setdefault('resting_state', {})['duration_s'] = float(eyes_duration.get())
                 self.cfg.__dict__.update(candidate.__dict__)
                 window.destroy()
             except (ValueError, TypeError) as exc:
                 feedback.set(str(exc))
-        self.ttk.Button(frame, text='Buscar streams', command=discover).grid(row=6, column=0, sticky='w')
-        self.ttk.Button(frame, text='Salvar parâmetros', command=save, style='Primary.TButton').grid(row=6, column=1, sticky='e')
+        self.ttk.Button(frame, text='Buscar streams', command=discover).grid(row=7, column=0, sticky='w')
+        self.ttk.Button(frame, text='Salvar parâmetros', command=save, style='Primary.TButton').grid(row=7, column=1, sticky='e')
         window.grab_set()
 
     def set_protocol(self, labels):
@@ -252,6 +260,10 @@ class Operator:
         instruction = 'Simulação completa: não precisa de Unity nem equipamento.' if source_name(cfg) == 'simulator' else 'Abra o Unity e prepare o participante. Inicie quando estiver pronto.'
         if cfg._raw_config.get('protocol', {}).get('acquisition_test_s'):
             instruction = 'Teste de aquisição: sem classificação e sem Unity. Mantenha o transmissor EEG ligado.'
+        if cfg.experiment.session_type == RESTING_SESSION:
+            duration = resting_options(cfg)['duration_s']
+            instruction = (f'Peça para manter os olhos abertos. Após o EEG estabilizar, a contagem de {duration:g} s começa. '
+                           f'A tela avisará quando pedir para fechar os olhos; um clique inicia os próximos {duration:g} s.')
         self.ttk.Label(self.body, text=instruction, wraplength=920).pack(anchor='w', pady=18)
         self.ttk.Label(self.body, text=f'Stream: {cfg.lsl.signal_name or "EEG disponível"}', style='Muted.TLabel').pack(anchor='w')
         self.ttk.Label(self.body, text=f'Dados em: {cfg.experiment.log_root}', style='Muted.TLabel').pack(anchor='w', pady=8)
@@ -262,13 +274,24 @@ class Operator:
     def begin_block(self):
         label = getattr(self, 'block_label', self.title.get())
         self.page(label, 'Gravando EEG e enviando os estímulos para o Unity.')
+        resting = self.cfg.experiment.session_type == RESTING_SESSION
+        if resting:
+            self.subtitle.set('Preparando o EEG. Comandos ao participante pelo experimentador; observe a contagem abaixo.')
         if self.cfg._raw_config.get('protocol', {}).get('acquisition_test_s'):
             self.subtitle.set('Gravando EEG e auditando os horários. Ao terminar, confira o relatório completo.')
         self.parameters.configure(state='disabled')
         self.cancelled = False
         self.status = self.tk.StringVar(value='Conectando à aquisição…')
         self.event = self.tk.StringVar(value='Preparando streams')
-        self.ttk.Label(self.body, textvariable=self.event, style='Muted.TLabel').pack(anchor='w', pady=(4, 6))
+        self.ttk.Label(self.body, textvariable=self.event, style='Resting.TLabel' if resting else 'Muted.TLabel',
+                       wraplength=970).pack(anchor='w', pady=(4, 6))
+        if resting:
+            self.resting_ready = False
+            self.resting_countdown = self.tk.StringVar(value='Aguardando EEG estável')
+            self.ttk.Label(self.body, textvariable=self.resting_countdown, style='Countdown.TLabel').pack(anchor='w')
+            self.resting_start = self.ttk.Button(self.buttons, text='Iniciar olhos fechados',
+                                                command=self.start_closed_eyes, style='Primary.TButton', state='disabled')
+            self.resting_start.pack(side='left')
         self.ttk.Label(self.body, textvariable=self.status).pack(anchor='w')
         self.bar = self.ttk.Progressbar(self.body, mode='indeterminate')
         self.bar.pack(fill='x', pady=(8, 12))
@@ -301,6 +324,32 @@ class Operator:
             self.ttk.Label(pca_tab, text='PCA · experimentador', style='Muted.TLabel').pack()
             self.ttk.Label(pca_tab, textvariable=self.live_probabilities).pack(pady=6)
         self.root.update_idletasks()
+
+    def update_resting_phase(self, label, remaining, duration):
+        condition = 'olhos abertos' if label == 'EYES_OPEN' else 'olhos fechados'
+        self.subtitle.set('EEG em gravação. O experimentador orienta o participante.')
+        self.event.set(f'GRAVANDO · {condition}')
+        self.resting_countdown.set(f'{math.ceil(remaining)} s restantes')
+        self.bar.stop()
+        self.bar.configure(mode='determinate', maximum=duration, value=duration-remaining)
+
+    def prepare_closed_eyes(self, duration):
+        self.subtitle.set('O EEG continua sendo gravado. A espera não entra no tempo das condições.')
+        self.event.set(f'{duration:g} s de olhos abertos concluídos. Peça para fechar os olhos.')
+        self.resting_countdown.set('Aguardando o experimentador')
+        self.resting_ready = False
+        self.resting_start.configure(state='normal')
+        self.resting_start.focus_set()
+        self.root.bell()
+
+    def start_closed_eyes(self):
+        self.resting_ready = True
+        self.resting_start.configure(state='disabled')
+
+    def finish_resting(self):
+        self.event.set('Registro concluído · peça para abrir os olhos.')
+        self.resting_countdown.set('Concluído')
+        self.root.bell()
 
     def set_event(self, label):
         labels = {'BASELINE': 'Baseline', 'ATTENTION': 'Atenção', 'LEFT_MI_STIM': 'Esquerda', 'RIGHT_MI_STIM': 'Direita',
@@ -413,10 +462,15 @@ class Operator:
         self.set_report(qc.get('report_path'), label)
         cv = evaluation.get('cv', {})
         diagnostic = bool(self.cfg and self.cfg._raw_config.get('protocol', {}).get('acquisition_test_s'))
+        resting = bool(self.cfg and self.cfg.experiment.session_type == RESTING_SESSION)
+        inspection_only = diagnostic or resting
         accuracy = cv.get('acc_mean')
         text = f'Acurácia CV: {accuracy:.1%}' if accuracy is not None else 'Acurácia não estimada'
         if diagnostic:
             text = 'Diagnóstico de aquisição · sem treino de modelo'
+        if resting:
+            text = ('Registro de repouso concluído · peça para abrir os olhos.' if complete else
+                    'Registro de repouso interrompido · oriente o participante a abrir os olhos.')
         self.ttk.Label(self.body, text=text, style='Muted.TLabel').pack(anchor='w', pady=4)
         messages = []
         if not complete:
@@ -443,12 +497,12 @@ class Operator:
             self.signal_preview.caption.set('Sem sinal suficiente para gerar um snapshot deste bloco.')
         figures = [('PCA', evaluation.get('pca_check_png')),
                    ('Matriz de confusão', str(Path(self.report_path).with_name('confusion_matrix.png')) if self.report_path else None)]
-        for title, filename in ([] if diagnostic else figures):
+        for title, filename in ([] if inspection_only else figures):
             tab = self.ttk.Frame(tabs)
             tabs.add(tab, text=title)
             self.add_image(tab, filename)
         audit = qc.get('timing_audit', {})
-        if diagnostic or audit:
+        if inspection_only or audit:
             timing_tab = self.ttk.Frame(tabs)
             tabs.add(timing_tab, text='Sincronização')
             self.timing_preview = TimingPreview(timing_tab)

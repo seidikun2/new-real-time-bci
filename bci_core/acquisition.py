@@ -123,7 +123,10 @@ def recording_config(cfg, signal_file):
     result._timing_audit = meta.get('timing', {})
     result._realtime_audit = meta.get('realtime', {})
     result._audit_only = meta.get('audit_only', False)
+    result._block_mode = meta.get('mode')
     recorded = meta.get('config', {})
+    if 'resting_state' in recorded:
+        result._raw_config['resting_state'] = copy.deepcopy(recorded['resting_state'])
     effective = meta.get('effective_config', {})
     result.trial_duration_s = effective.get('trial_duration_s', recorded.get('trial_duration_s', result.trial_duration_s))
     original_protocol = recorded.get('protocol', {})

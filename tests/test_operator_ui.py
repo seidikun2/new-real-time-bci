@@ -28,6 +28,45 @@ class PersistentOperatorTests(unittest.TestCase):
                 yield from children(child)
         self.assertFalse(any(w.winfo_class() == 'Toplevel' for w in children(self.op.root)))
 
+    def test_resting_countdown_and_manual_closed_eyes_use_same_window(self):
+        from bci_core.resting_state import RESTING_SESSION
+        self.cfg.experiment.session_type = RESTING_SESSION
+        self.op.root.after(50, lambda: self.op.action.set('start'))
+        self.assertTrue(self.op.prepare_block(self.cfg, 'Olhos abertos e fechados'))
+        self.op.begin_block()
+        self.op.update_resting_phase('EYES_OPEN', 45., 45.)
+        self.assertIn('GRAVANDO · olhos abertos', self.op.event.get())
+        self.assertIn('45 s', self.op.resting_countdown.get())
+        self.op.prepare_closed_eyes(45.)
+        self.assertFalse(self.op.resting_ready)
+        self.assertIn('Peça para fechar os olhos', self.op.event.get())
+        self.op.resting_start.invoke()
+        self.assertTrue(self.op.resting_ready)
+        self.op.update_resting_phase('EYES_CLOSED', 30., 45.)
+        self.assertIn('olhos fechados', self.op.event.get())
+        self.op.finish_resting()
+        self.assertIn('Concluído', self.op.resting_countdown.get())
+        self.op.root.geometry('960x660')
+        self.op.root.update_idletasks()
+        self.assertLessEqual(self.op.buttons.winfo_y()+self.op.buttons.winfo_height(), self.op.root.winfo_height())
+        self.assert_one_window()
+        self.op.end_block()
+        self.op.root.after(50, lambda: self.op.action.set('next'))
+        self.assertEqual(self.op.review_block('Repouso', {'complete':True}, {'issues':[]}, {'not_applicable':True}), 'next')
+        tabs = next(w for w in self.op.body.winfo_children() if w.winfo_class() == 'TNotebook')
+        self.assertEqual([tabs.tab(tab, 'text') for tab in tabs.tabs()], ['Snapshot do sinal', 'Sincronização'])
+
+    def test_resting_duration_can_be_changed_to_30_seconds_in_parameters(self):
+        self.op.cfg = self.cfg
+        self.op.configure_parameters()
+        window = next(w for w in self.op.root.winfo_children() if w.winfo_class() == 'Toplevel')
+        frame = window.winfo_children()[0]
+        choice = next(w for w in frame.winfo_children() if w.winfo_class() == 'TCombobox' and tuple(w.cget('values')) == ('30', '45'))
+        choice.set('30')
+        next(w for w in frame.winfo_children() if w.winfo_class() == 'TButton' and w.cget('text') == 'Salvar parâmetros').invoke()
+        self.assertEqual(self.cfg._raw_config['resting_state']['duration_s'], 30.)
+        self.assert_one_window()
+
     def test_one_window_for_configuration_collection_analysis_and_results(self):
         def prepare():
             self.op.fields['source'].set('ANT Neuro · eego mylab')

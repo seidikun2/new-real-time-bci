@@ -17,6 +17,7 @@ from .report import collection_info, write_report
 from .storage import external_path
 from .signal_preview import signal_snapshot
 from .data import read_signal_csv, read_markers_csv, timestamp_integrity
+from .resting_state import inspect_resting
 
 
 def inspect_quality(times, X, names, marker_times, labels, cfg):
@@ -75,37 +76,42 @@ def inspect_quality(times, X, names, marker_times, labels, cfg):
     if len(marker_times) == 0 or not np.isfinite(marker_times).all() or np.any(np.diff(marker_times) < 0):
         issues.append('ERRO: marcadores ausentes ou timestamps inválidos.')
     counts = Counter(labels)
-    if counts.get('ATTEMPT', 0) != sum(counts.get(label, 0) for label in ['LEFT_MI_STIM', 'RIGHT_MI_STIM', 'REST_STIM']):
-        issues.append('Número de ATTEMPTs diferente do número de cues.')
-    if counts.get('REST', 0) != counts.get('ATTEMPT', 0) or counts.get('BASELINE', 0) != 1:
-        issues.append('Sequência incompleta: confira BASELINE e pausas REST.')
-    if counts.get('BLOCK_END', 0) != 1:
-        issues.append('Bloco incompleto ou duplicado: esperado um BLOCK_END.')
-    required = ['LEFT_MI_STIM', 'RIGHT_MI_STIM', 'REST_STIM']
-    expected = cfg._raw_config.get('protocol', {}).get('trials_per_class', 15)
-    if any(counts[label] != expected for label in required):
-        issues.append(f'Quantidade de cues diferente do plano ({expected} por classe).')
-    last_cue = None
-    attempts = []
-    for i, (ts, label) in enumerate(zip(marker_times, labels)):
-        if label in required:
-            if last_cue is not None:
-                issues.append('Cue sem ATTEMPT antes do próximo cue.')
-            last_cue = label
-        elif label == 'ATTEMPT':
-            if last_cue is None:
-                issues.append('ATTEMPT sem cue correspondente.')
-            attempts.append(float(ts))
-            if i + 1 == len(labels) or labels[i+1] != 'REST' or abs(marker_times[i+1] - ts - cfg.trial_duration_s) > .15:
-                issues.append('ATTEMPT com duração incorreta ou sem REST seguinte.')
-            last_cue = None
-        elif label not in cfg.codes.code_map.values():
-            issues.append(f'Marcador desconhecido: {label}.')
-    if last_cue is not None:
-        issues.append('Último cue sem ATTEMPT.')
-    finite_times = times[np.isfinite(times)]
-    if len(finite_times) and any(t < finite_times[0] or t + cfg.trial_duration_s > finite_times[-1] + 1/fs for t in attempts):
-        issues.append('Tentativa fora da cobertura EEG: início/fim truncado.')
+    conditions = None
+    if getattr(cfg, '_block_mode', None) == 'resting':
+        resting_issues, conditions = inspect_resting(marker_times, labels, times, cfg)
+        issues.extend(resting_issues)
+    else:
+        if counts.get('ATTEMPT', 0) != sum(counts.get(label, 0) for label in ['LEFT_MI_STIM', 'RIGHT_MI_STIM', 'REST_STIM']):
+            issues.append('Número de ATTEMPTs diferente do número de cues.')
+        if counts.get('REST', 0) != counts.get('ATTEMPT', 0) or counts.get('BASELINE', 0) != 1:
+            issues.append('Sequência incompleta: confira BASELINE e pausas REST.')
+        if counts.get('BLOCK_END', 0) != 1:
+            issues.append('Bloco incompleto ou duplicado: esperado um BLOCK_END.')
+        required = ['LEFT_MI_STIM', 'RIGHT_MI_STIM', 'REST_STIM']
+        expected = cfg._raw_config.get('protocol', {}).get('trials_per_class', 15)
+        if any(counts[label] != expected for label in required):
+            issues.append(f'Quantidade de cues diferente do plano ({expected} por classe).')
+        last_cue = None
+        attempts = []
+        for i, (ts, label) in enumerate(zip(marker_times, labels)):
+            if label in required:
+                if last_cue is not None:
+                    issues.append('Cue sem ATTEMPT antes do próximo cue.')
+                last_cue = label
+            elif label == 'ATTEMPT':
+                if last_cue is None:
+                    issues.append('ATTEMPT sem cue correspondente.')
+                attempts.append(float(ts))
+                if i + 1 == len(labels) or labels[i+1] != 'REST' or abs(marker_times[i+1] - ts - cfg.trial_duration_s) > .15:
+                    issues.append('ATTEMPT com duração incorreta ou sem REST seguinte.')
+                last_cue = None
+            elif label not in cfg.codes.code_map.values():
+                issues.append(f'Marcador desconhecido: {label}.')
+        if last_cue is not None:
+            issues.append('Último cue sem ATTEMPT.')
+        finite_times = times[np.isfinite(times)]
+        if len(finite_times) and any(t < finite_times[0] or t + cfg.trial_duration_s > finite_times[-1] + 1/fs for t in attempts):
+            issues.append('Tentativa fora da cobertura EEG: início/fim truncado.')
     clean = np.nan_to_num(X, nan=0., posinf=0., neginf=0.)
     frequencies, psd = signal.welch(clean, fs=fs, nperseg=min(len(clean), max(8, round(fs*2))), axis=0)
     power = np.maximum(psd.sum(axis=0), np.finfo(float).tiny)
@@ -163,7 +169,7 @@ def inspect_quality(times, X, names, marker_times, labels, cfg):
     report = dict(status='attention' if issues else 'ok', issues=list(dict.fromkeys(issues)),
                   timestamp_integrity=timing,
                   timing_audit=audit,
-                  realtime=getattr(cfg, '_realtime_audit', {}),
+                  realtime=getattr(cfg, '_realtime_audit', {}), resting_state=conditions,
                   estimated_fs_hz=estimated_fs, samples=len(times), gaps=gaps, estimated_missing_samples=missing,
                   marker_counts=dict(counts), channels=rows, unit=unit,
                   source=source_name(cfg), simulated=simulated, observations=observations,
@@ -218,10 +224,19 @@ def run_check_data(cfg, mode='train', markers_file=None, signal_file=None, save_
         axes[0].plot(times[::step]-origin, normalized[::step, i]+i*10, lw=.4, color='#334155')
     axes[0].set_yticks(np.arange(len(names))*10, names)
     axes[0].set_title('EEG bruto: escala robusta por canal, picos recortados em ±6 para facilitar leitura')
-    for ts, label in zip(tm, labels):
-        if label in {'LEFT_MI_STIM', 'RIGHT_MI_STIM', 'REST_STIM'}:
-            axes[0].axvline(ts-origin, alpha=.25, color={'LEFT_MI_STIM':'blue','RIGHT_MI_STIM':'red','REST_STIM':'gray'}[label])
-    axes[0].set_xlabel('Tempo desde primeira amostra (s); azul LEFT, vermelho RIGHT, cinza REST_STIM')
+    if report.get('resting_state') is not None:
+        for condition, color in zip(report['resting_state'], ['#b9d9f0', '#d9dee6']):
+            if condition['start_lsl_s'] is not None and condition['end_lsl_s'] is not None:
+                axes[0].axvspan(condition['start_lsl_s']-origin, condition['end_lsl_s']-origin,
+                               color=color, alpha=.45, label=condition['label'])
+        if axes[0].get_legend_handles_labels()[0]:
+            axes[0].legend(loc='upper right')
+        axes[0].set_xlabel('Tempo desde primeira amostra (s); faixas indicam olhos abertos e fechados')
+    else:
+        for ts, label in zip(tm, labels):
+            if label in {'LEFT_MI_STIM', 'RIGHT_MI_STIM', 'REST_STIM'}:
+                axes[0].axvline(ts-origin, alpha=.25, color={'LEFT_MI_STIM':'blue','RIGHT_MI_STIM':'red','REST_STIM':'gray'}[label])
+        axes[0].set_xlabel('Tempo desde primeira amostra (s); azul LEFT, vermelho RIGHT, cinza REST_STIM')
     peak = np.maximum(psd.max(axis=0), np.finfo(float).tiny)
     relative = 10*np.log10(np.maximum(psd/peak, np.finfo(float).tiny))
     image = axes[1].imshow(relative.T, aspect='auto', origin='lower', cmap='Greys', vmin=-60, vmax=0,

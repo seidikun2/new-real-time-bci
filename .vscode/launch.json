@@ -23,7 +23,7 @@
       "justMyCode": true
     },
     {
-      "name": "BCI: validar pipeline completa (8 blocos simulados)",
+      "name": "BCI: validar pipeline completa (10 blocos simulados)",
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/main.py",

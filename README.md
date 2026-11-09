@@ -56,14 +56,14 @@ funciona sem desktop. Na estação do laboratório, inicie o transmissor e o Uni
 antes de começar a coleta.
 
 Para ensaiar a condução na mesma interface, selecione **BCI: protocolo completo em
-simulação** no VS Code e pressione F5. Execução motora, imagética e os dois blocos
+simulação** no VS Code e pressione F5. Repouso com olhos abertos/fechados, execução motora, imagética e os dois blocos
 online funcionam sem Unity nem amplificador. Escolha a etapa na preparação e o
 modelo antes do online, como na coleta real. Os tempos normais do protocolo são
 mantidos; para um teste curto automático das duas etapas, use a validação abaixo.
 
 ## Fluxo experimental preservado
 
-`Execução motora → Imagética motora → Online bloco 1 → Online bloco 2`.
+`Olhos abertos/fechados → Execução motora → Imagética motora → Online bloco 1 → Online bloco 2`.
 
 - `single_target`: perna-alvo vs `REST_STIM`; a outra perna continua como cue,
   mas fica fora do ajuste.
@@ -84,6 +84,32 @@ Os nomes de sessão `_PCA` e `_sem_feedback` foram mantidos para organização d
 arquivos existentes. Nesta versão o PCA fica sempre na janela do experimentador;
 os dois blocos online usam o modelo escolhido e o mesmo contrato de controle.
 A apresentação do avatar continua no Unity.
+
+## Registro inicial de olhos abertos e fechados
+
+Ao começar o protocolo completo ou pela execução motora, a interface oferece
+primeiro o registro de repouso. O padrão é **45 s de olhos abertos + 45 s de olhos
+fechados**. Em **Parâmetros**, escolha 30 ou 45 segundos por condição.
+
+1. Peça para manter os olhos abertos e clique em **Iniciar bloco**. Após conexão
+   e estabilização do EEG, a tela mostra **GRAVANDO · olhos abertos** e a contagem.
+2. Ao terminar, aparece **Peça para fechar os olhos**, com um aviso sonoro se o
+   sistema permitir. A contagem para e o EEG continua sendo gravado.
+3. Dê o comando ao participante e clique em **Iniciar olhos fechados**. Só esse
+   clique inicia o segundo período. Ao final, a tela pede para abrir os olhos.
+
+A espera entre condições não entra nos 45 s. Os marcadores CSV são `EYES_OPEN`
+(10), `EYES_OPEN_END` (11), `EYES_CLOSED` (12), `EYES_CLOSED_END` (13) e `BLOCK_END`
+(99), no mesmo relógio do EEG. Esses marcadores ficam **somente nos arquivos**;
+este registro não envia estímulos ao Unity. O comando é do experimentador.
+
+Os arquivos ficam em `sujeito/Ssessão/Repouso_olhos/resting` dentro da pasta de
+dados escolhida. O relatório mostra os tempos de cada condição, sinal, espectro,
+qualidade e eventual interrupção. Este registro não treina o modelo de imagética
+motora e não aparece na escolha dos CSVs de treino. Também funciona em simulação.
+
+`resting_state.enabled: false` desativa esse bloco. Iniciar diretamente na
+imagética ou no online também o pula, para permitir continuar uma sessão.
 
 ## Modelo e interpretação da acurácia
 
@@ -346,9 +372,10 @@ O PDF em `docs/` é documentação histórica e pode descrever a pipeline anteri
 
 ## Verificação técnica
 
-No VS Code, selecione **BCI: validar pipeline completa (8 blocos simulados)** e pressione F5.
-Esse teste coleta execução, imagética e os dois blocos online em **cada uma das duas
-etapas**, com tempos curtos, treino/CV e relatório após cada bloco. Também publica
+No VS Code, selecione **BCI: validar pipeline completa (10 blocos simulados)** e pressione F5.
+Esse teste coleta repouso, execução, imagética e os dois blocos online em **cada
+uma das duas etapas**, com tempos curtos e relatório após cada bloco. Treino/CV
+são feitos nos blocos motores. Também publica
 feedback e executa inferência e controle online, sem Unity, hardware nem desktop.
 Somente nesse diagnóstico automático, o modelo de imagética da etapa é escolhido
 para os dois online e permanece fixo. Na interface, a escolha continua manual.

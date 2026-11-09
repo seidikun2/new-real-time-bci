@@ -77,6 +77,8 @@ def fit_final_model(Xw, y, pca_dim=2, svc_c=1., seed=42):
 
 def run_calibration(cfg, markers_file, signal_file):
     cfg = recording_config(cfg, signal_file)
+    if getattr(cfg, '_block_mode', None) == 'resting':
+        raise ValueError('Registro de olhos não é treino de imagética motora. Selecione dados de EM/IM ou online.')
     audit = getattr(cfg, '_timing_audit', {})
     if getattr(cfg, '_audit_only', False):
         raise ValueError('Este CSV é a cópia de auditoria. Selecione o CSV de trabalho *_signal_*.csv.')

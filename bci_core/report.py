@@ -15,6 +15,7 @@ from .class_schema import display_name
 from .acquisition import SOURCES
 from .timing_report import timing_report
 from .realtime_report import realtime_report
+from .resting_state import RESTING_LABEL
 
 
 def collection_info(cfg, signal_file):
@@ -43,6 +44,8 @@ def collection_info(cfg, signal_file):
             for mode in modes:
                 if mode.get('session_type') == session:
                     label = mode.get('label', label)
+    if metadata.get('mode') == 'resting':
+        label = RESTING_LABEL
     started, ended = metadata.get('started_at'), metadata.get('ended_at')
     # Arquivos anteriores não tinham esses campos. Use o horário do CSV, nunca
     # mtime do arquivo ou o momento em que o relatório foi gerado.
@@ -68,7 +71,7 @@ def collection_info(cfg, signal_file):
             'session_id': original.get('session_id', cfg.experiment.session_id),
             'started_at': started, 'ended_at': ended, 'requested_at': metadata.get('requested_at'),
             'complete': complete if isinstance(complete, bool) else None,
-            'reason': metadata.get('reason'), 'filename': path.name, 'source': source}
+            'reason': metadata.get('reason'), 'filename': path.name, 'source': source, 'mode': metadata.get('mode')}
 
 
 def display_time(value):
@@ -109,7 +112,9 @@ def write_report(cfg, report, evaluation, signal_file, folder):
     complete = collection['complete']
     if complete is False:
         outcome, outcome_class = 'INTERROMPIDO', 'interrupted'
-        message = 'Coleta interrompida. Os dados são parciais e este bloco não foi usado no treino automático.'
+        message = ('Registro interrompido. Os períodos de olhos abertos e fechados podem estar incompletos.'
+                   if collection.get('mode') == 'resting' else
+                   'Coleta interrompida. Os dados são parciais e este bloco não foi usado no treino automático.')
         if collection.get('reason'):
             message += ' Motivo: ' + collection['reason']
     elif complete is True:
@@ -132,6 +137,12 @@ def write_report(cfg, report, evaluation, signal_file, folder):
     if not alerts:
         alerts = '<li>Nenhum alerta nos critérios aplicados a este bloco.</li>'
     notes = ''.join(f'<p>{escape(value)}</p>' for value in report.get('observations', []))
+    if report.get('resting_state') is not None:
+        notes += '<p>Condições conduzidas pelo experimentador; a espera entre elas não faz parte dos períodos medidos.</p>'
+        for condition in report['resting_state']:
+            duration = condition['duration_s']
+            actual = f'{duration:.1f} s' if duration is not None else 'incompleto'
+            notes += f"<p><strong>{escape(condition['label'])}:</strong> {actual} (planejado: {condition['planned_s']:g} s).</p>"
     usable = evaluation.get('usable_data', {})
     if usable:
         notes += (f"<p>Treino: {usable['usable_samples']}/{usable['total_samples']} amostras utilizáveis; "
@@ -147,7 +158,8 @@ def write_report(cfg, report, evaluation, signal_file, folder):
         rows.append('<tr class="'+('suspect' if suspect else '')+'">'+''.join(f'<td>{escape(value)}</td>' for value in values)+'</tr>')
     status = 'Revisar sinal' if report['issues'] else ('Simulação íntegra' if report.get('simulated') else 'Sem alertas')
     available = cv.get('acc_mean') is not None
-    summary = 'Validação cruzada por tentativa; as janelas do mesmo trial permanecem no mesmo fold.' if available else evaluation.get('error', cv.get('reason', 'Aguardando treino após a inspeção dos dados.'))
+    summary = ('Validação cruzada por tentativa; as janelas do mesmo trial permanecem no mesmo fold.' if available else
+               evaluation.get('error', evaluation.get('note', cv.get('reason', 'Aguardando treino após a inspeção dos dados.'))))
     fs = report['estimated_fs_hz']
     request_note = ''
     if not collection['started_at'] and collection.get('requested_at'):
@@ -178,6 +190,24 @@ def write_report(cfg, report, evaluation, signal_file, folder):
         'overview': figure(report['samples'] > 1 and (folder / 'overview.png').exists(), 'overview.png', 'Sem sinal suficiente para gerar os gráficos.'),
         'channels_download': ' &nbsp;·&nbsp; <a href="channels.csv">Tabela CSV</a>' if (folder / 'channels.csv').exists() else '',
     }
+    cards = [('Acurácia média · CV', fields['accuracy'], 'Predições fora do fold de treino'),
+             ('Acurácia balanceada', fields['balanced'], 'Mesmo peso para cada classe'),
+             ('Voto por tentativa', fields['trial_accuracy'], 'Decisão agregada no trial'),
+             ('Aquisição registrada', fields['fs']+' <small>Hz</small>',
+              f"{fields['channel_count']} canais · {fields['samples']} amostras")]
+    if collection.get('mode') == 'resting':
+        conditions = report.get('resting_state') or []
+        cards = [(row['label'], f"{row['duration_s']:.1f} s" if row['duration_s'] is not None else '—',
+                  f"Planejado: {row['planned_s']:g} s") for row in conditions] + cards[-1:]
+    fields['metrics'] = '<div class="metrics">'+''.join(
+        f'<div class="metric"><span>{escape(label)}</span><strong>{value}</strong><small>{escape(caption)}</small></div>'
+        for label, value, caption in cards)+'</div>'
+    fields['model_figures'] = '' if collection.get('mode') == 'resting' else (
+        '<div class="grid"><section class="card"><div class="eyebrow">Representação visual</div><h2>Mapa PCA</h2>'
+        '<p class="muted">Check do bloco no espaço de duas dimensões. A classificação usa o espaço completo.</p>'
+        +fields['pca']+'</section><section class="card"><div class="eyebrow">Desempenho fora do treino</div>'
+        '<h2>Matriz de confusão</h2><p class="muted">Linhas: classe real. Colunas: classe predita. '
+        'À direita, porcentagem dentro de cada classe real.</p>'+fields['matrix']+'</section></div>')
     template = (Path(__file__).parent / 'report_template.html').read_text(encoding='utf-8')
     template = re.sub(r'\{\{(\w+)\}\}', lambda match: fields[match.group(1)], template)
     path = folder / 'report.html'

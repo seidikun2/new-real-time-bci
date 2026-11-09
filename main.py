@@ -27,6 +27,8 @@ from bci_core.check_data import run_check_data
 from bci_core.data import find_marker_signal_pairs
 from bci_core.storage import external_path, prepare_data_root
 from bci_core.realtime import RealtimeMonitor
+from bci_core.resting_state import (RESTING_SESSION, RESTING_LABEL, resting_options,
+                                    resting_schedule, resting_marker, run_resting)
 
 PROJECT = Path(__file__).resolve().parent
 
@@ -134,7 +136,8 @@ def prepare_streams(cfg, mode):
 
 def run_block(cfg, mode='train', model_ref=None, block_index=0, operator=None, acquisition_duration=None):
     """Não inicia cues até EEG, logger e (no online) decoder/controle funcionarem."""
-    events = (build_schedule(cfg, block_index) if acquisition_duration is None else
+    events = (resting_schedule(cfg) if mode == 'resting' else
+              build_schedule(cfg, block_index) if acquisition_duration is None else
               [Event('BASELINE', acquisition_duration), Event(cfg.protocol.block_end_label, 0.)])
     # Identidade efêmera vale apenas dentro de um bloco; o publicador pode reiniciar.
     cfg.__dict__.pop('_signal_uid', None)
@@ -243,16 +246,20 @@ def run_block(cfg, mode='train', model_ref=None, block_index=0, operator=None, a
                 wait(.1)
         recorder.begin_protocol(diagnostic=acquisition_duration is not None)
         cues_started = True
-        complete = run_schedule(events, publisher, recorder, wait, getattr(operator, 'set_event', None))
+        complete = (run_resting(cfg, recorder, wait, operator) if mode == 'resting' else
+                    run_schedule(events, publisher, recorder, wait, getattr(operator, 'set_event', None)))
         wait(.2)
         reason = 'completed'
     except (Exception, KeyboardInterrupt) as exc:
         complete = False
         reason = f'{type(exc).__name__}: {exc}'
         print(f'[bloco] interrompido: {reason}')
-        # Unity recebe REST e BLOCK_END também na interrupção; status fica incompleto.
-        publisher.send('REST', recorder)
-        publisher.send(cfg.protocol.block_end_label, recorder)
+        # Interrupções ficam como parciais; nas fases motoras, Unity recebe REST e BLOCK_END.
+        if mode == 'resting':
+            resting_marker(cfg, recorder, 'BLOCK_END')
+        else:
+            publisher.send('REST', recorder)
+            publisher.send(cfg.protocol.block_end_label, recorder)
     finally:
         stop.set()
         for thread in threads:
@@ -282,7 +289,7 @@ def run_block(cfg, mode='train', model_ref=None, block_index=0, operator=None, a
                     'effective_config': {key: value for key, value in asdict(cfg).items() if key != '_raw_config'},
                     'schedule': [event.__dict__ for event in events], 'block_index': block_index}
         recorder.save_metadata(metadata)
-    return {'complete': complete, 'reason': reason, 'markers_file': str(recorder.marker_path.resolve()),
+    return {'complete': complete, 'reason': reason, 'mode': mode, 'markers_file': str(recorder.marker_path.resolve()),
             'signal_file': str(recorder.signal_path.resolve())}
 
 
@@ -290,7 +297,12 @@ def analyze_block(cfg, block, operator=None):
     """Análise automática e não bloqueante para a condução; nenhum popup."""
     cfg = recording_config(cfg, block['signal_file'])
     pair = (block['markers_file'], block['signal_file'])
-    if cfg._raw_config.get('protocol', {}).get('acquisition_test_s'):
+    if block.get('mode') == 'resting' or getattr(cfg, '_block_mode', None) == 'resting':
+        evaluation = {'not_applicable': True,
+                      'note': 'Registro de olhos abertos e fechados para inspeção do EEG, sem treino de imagética motora.'}
+        if not block['complete']:
+            evaluation['error'] = f"Registro incompleto. {block['reason']}"
+    elif cfg._raw_config.get('protocol', {}).get('acquisition_test_s'):
         evaluation = {'error': 'Teste de aquisição: sem tentativas de classificação; treino não executado.'}
     elif block['complete']:
         try:
@@ -301,7 +313,7 @@ def analyze_block(cfg, block, operator=None):
         evaluation = {'error': f"Bloco incompleto; não usado no treino. {block['reason']}"}
     threshold = cfg.protocol.min_cv_accuracy
     accuracy = evaluation.get('cv', {}).get('acc_mean')
-    if threshold is not None and (accuracy is None or accuracy < threshold):
+    if not evaluation.get('not_applicable') and threshold is not None and (accuracy is None or accuracy < threshold):
         evaluation.setdefault('warnings', []).append(f'Acurácia abaixo do critério {threshold}: {accuracy}.')
     qc = run_check_data(cfg, markers_file=pair[0], signal_file=pair[1], evaluation=evaluation)
     return qc, evaluation
@@ -319,6 +331,8 @@ def protocol_blocks(cfg, full=False):
         raise ValueError('start_phase deve ser auto, execution, imagery ou online.')
     blocks = []
     if phase == 'execution':
+        if resting_options(cfg)['enabled']:
+            blocks.append((RESTING_LABEL, RESTING_SESSION, 'resting'))
         blocks.append(('Execução motora', p.motor_session_type, 'train'))
     if phase in {'execution', 'imagery'}:
         blocks.append(('Imagética motora', p.imagery_session_type, 'train'))
@@ -364,7 +378,7 @@ def run_experiment(cfg, operator):
 
 
 def run_simulation_check(cfg, output=None, stages=('single_target', 'two_legs')):
-    """Percorre EM, IM e os dois online em cada etapa, com os mesmos componentes."""
+    """Percorre repouso, EM, IM e os dois online em cada etapa."""
     from tempfile import mkdtemp
     set_source(cfg, 'simulator')
     cfg.experiment.log_root = prepare_data_root(output or mkdtemp(prefix='bci-full-simulation-'))
@@ -375,6 +389,7 @@ def run_simulation_check(cfg, output=None, stages=('single_target', 'two_legs'))
     cfg._raw_config['debug_plot'] = {'enabled': False}
     cfg._raw_config['protocol'].update(trials_per_class=3, baseline_s=.2, attention_s=.1, cue_s=.1, rest_s=.1)
     cfg._raw_config['representation_feedback']['grid_size'] = 40
+    cfg._raw_config['resting_state'] = {'enabled': True, 'duration_s': .2}
     cfg.cv_splits = 2
     results = []
     for stage in stages:
@@ -386,14 +401,15 @@ def run_simulation_check(cfg, output=None, stages=('single_target', 'two_legs'))
             block_cfg = with_session(cfg, session_type)
             block = run_block(block_cfg, mode, model_ref if mode == 'online' else None)
             qc, evaluation = analyze_block(block_cfg, block)
-            if not block['complete'] or evaluation.get('cv', {}).get('status') != 'ok':
+            analyzed = evaluation.get('not_applicable') if mode == 'resting' else evaluation.get('cv', {}).get('status') == 'ok'
+            if not block['complete'] or not analyzed:
                 raise RuntimeError(f'Simulação falhou em {stage}/{label}: {block["reason"]}; {evaluation.get("error", evaluation.get("cv"))}')
             if session_type == cfg.protocol.imagery_session_type:
                 model_ref = str(Path(evaluation['pca_map_json']).parent)
             results.append({'stage': stage, 'block': label, 'session_type': session_type, 'mode': mode,
                             'markers_file': block['markers_file'], 'signal_file': block['signal_file'],
                             'report': qc['report_path'], 'model_used': model_ref if mode == 'online' else None,
-                            'cv': evaluation['cv']})
+                            'cv': evaluation.get('cv')})
     manifest = Path(cfg.experiment.log_root) / f'simulation_{datetime.now():%Y%m%d_%H%M%S_%f}.json'
     manifest.write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding='utf-8')
     print(f'SIMULAÇÃO COMPLETA OK: {len(results)} blocos. Relatórios e manifesto em {cfg.experiment.log_root}')

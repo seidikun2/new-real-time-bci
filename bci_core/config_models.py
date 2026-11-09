@@ -172,6 +172,8 @@ def load_config(path: str = "config.yaml") -> AppConfig:
             raise ValueError(f"Campo LSL desconhecido: {key}")
         setattr(lsl, key, value)
     cmap = {1: "BASELINE", 2: "ATTENTION", 3: "LEFT_MI_STIM", 4: "RIGHT_MI_STIM", 5: "ATTEMPT", 6: "REST", 7: "BOTH_MI_STIM", 8: "REST_STIM", 99: "BLOCK_END"}
+    from .resting_state import RESTING_CODES
+    cmap.update({code: label for label, code in RESTING_CODES.items()})
     cmap.update({int(k): v for k, v in raw.get("codes", {}).get("map", {}).items()})
     cr = raw.get("codes", {})
     codes = CodesConfig(
