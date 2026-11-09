@@ -76,7 +76,7 @@ protocol:
       session_type  : "IM_online_duas_pernas_sem_feedback"
 
   # Perfil atual: 20 tentativas por classe = 60 trials; use 15 para 45 trials.
-  trials_per_class : 20
+  trials_per_class : 15
   baseline_s       : 3.0
   attention_s      : 2.0
   cue_s            : 1.25
