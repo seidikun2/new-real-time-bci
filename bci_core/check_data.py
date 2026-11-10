@@ -193,11 +193,21 @@ def run_check_data(cfg, mode='train', markers_file=None, signal_file=None, save_
     folder.mkdir(parents=True, exist_ok=True)
     collection = collection_info(cfg, signal_file)
     if len(times) < 2:
-        report = {'status': 'error', 'issues': ['EEG vazio ou insuficiente; confira aquisição antes de repetir.'],
-                  'evaluation': evaluation, 'collection': collection, 'samples': len(times),
-                  'realtime': getattr(cfg, '_realtime_audit', {}),
-                  'estimated_fs_hz': None, 'channels': [], 'source': source_name(cfg),
-                  'thresholds': cfg._raw_config.get('quality', {}), 'unit': 'uV'}
+        report = {
+            'status': 'error',
+            'issues': ['EEG vazio ou insuficiente; confira aquisição antes de repetir.'],
+            'evaluation': evaluation,
+            'collection': collection,
+            'samples': len(times),
+            'participant': collection.get('participant', {}),
+            'comment': collection.get('comment', ''),
+            'realtime': getattr(cfg, '_realtime_audit', {}),
+            'estimated_fs_hz': None,
+            'channels': [],
+            'source': source_name(cfg),
+            'thresholds': cfg._raw_config.get('quality', {}),
+            'unit': 'uV',
+        }
         (folder / 'quality.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
         path = write_report(cfg, report, evaluation, signal_file, folder)
         return {'report_path': str(path.resolve()), **report}
@@ -208,6 +218,8 @@ def run_check_data(cfg, mode='train', markers_file=None, signal_file=None, save_
     if report['issues']:
         report['status'] = 'attention'
     report['collection'] = collection
+    report['participant'] = collection.get('participant', {})
+    report['comment'] = collection.get('comment', '')
     snapshot = signal_snapshot(times, X, names)
     if snapshot is not None:
         snapshot_file = folder / 'signal_snapshot.npz'

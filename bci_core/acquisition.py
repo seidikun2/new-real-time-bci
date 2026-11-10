@@ -128,8 +128,23 @@ def recording_config(cfg, signal_file):
     if 'resting_state' in recorded:
         result._raw_config['resting_state'] = copy.deepcopy(recorded['resting_state'])
     effective = meta.get('effective_config', {})
+    from .catalog import context_for_signal
+
+    context = context_for_signal(signal_file, cfg.experiment.log_root)
+    for key in ['group', 'cap', 'age', 'sex', 'laterality', 'collection_date', 'experimenter']:
+        if key in context:
+            setattr(result.experiment, key, context[key])
+    if context.get('subject'):
+        result.experiment.subject_id = context['subject']
+    if context.get('session'):
+        result.experiment.session_id = int(context['session'][1:])
+    if context.get('block'):
+        result.experiment.session_type = context['block']
     result.trial_duration_s = effective.get('trial_duration_s', recorded.get('trial_duration_s', result.trial_duration_s))
     original_protocol = recorded.get('protocol', {})
+    for key in ['stage', 'training_mode', 'online_target']:
+        if key in original_protocol and original_protocol[key] != 'auto':
+            setattr(result.protocol, key, original_protocol[key])
     for key in ['trials_per_class', 'baseline_s', 'attention_s', 'cue_s', 'rest_s', 'acquisition_test_s']:
         if key in original_protocol:
             result._raw_config.setdefault('protocol', {})[key] = original_protocol[key]

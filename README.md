@@ -21,9 +21,13 @@ Preparação, feita uma vez na estação do laboratório:
 Em cada sessão:
 
 1. Abra o projeto no VS Code, selecione **BCI: conduzir experimento** e pressione F5.
-2. Na única janela da aplicação, informe sujeito e sessão e escolha etapa, perna-alvo
-   e aquisição. Em **Pasta dos dados**, escolha onde guardar a sessão, fora da pasta
-   do projeto. Os detalhes ficam no botão **Parâmetros**, quando necessário.
+2. Na única janela da aplicação, escolha o grupo (**TEST, CTRL, LM ou LION**),
+   participante e sessão. Em **Coleta**, escolha etapa, aquisição e a pasta de dados
+   do laboratório, fora do projeto. Em **Cadastro da sessão**, informe touca,
+   lateralidade, data da coleta e nome do experimentador/a. Idade e sexo são opcionais.
+   O cadastro é salvo automaticamente e reaparece ao abrir a aplicação. A lateralidade
+   define diretamente a perna de controle na etapa de uma perna: Esquerda controla
+   a esquerda, Direita controla a direita. Os detalhes de aquisição ficam em **Parâmetros**.
 3. Para ANT Neuro, o nome `EE225-020034-000905_on_DESKTOP-U197OKE` já está configurado.
    Frequência e quantidade de canais são lidas do stream; o perfil inicial da estação
    está em 500 Hz/29 canais e aceita também transmissões com 64 canais. Não é necessário
@@ -38,6 +42,9 @@ Em cada sessão:
    navegador nem pedir confirmação de cada check. Escolha **Próximo bloco**, **Repetir bloco** ou
    **Encerrar sessão**. O link **Abrir relatório completo** fica visível entre blocos,
    inclusive na preparação do próximo, e abre o relatório no navegador ao clicar.
+   O campo opcional **Anotações do bloco** salva automaticamente observações sobre
+   a coleta, inclusive em blocos interrompidos. Ele não aparece no repouso de olhos
+   abertos/fechados.
 6. Antes do online, selecione explicitamente o modelo na própria janela. Também
    é possível escolher dados para retreinar ou abrir um modelo de outra pasta.
    Novos treinos não substituem o modelo ativo; **Trocar modelo** fica disponível
@@ -70,8 +77,7 @@ mantidos; para um teste curto automático das duas etapas, use a validação aba
 - `two_legs`: `LEFT_MI_STIM` vs `RIGHT_MI_STIM` vs `REST_STIM`.
 - `start_phase: auto` percorre a sequência completa. É possível começar na
   imagética ou no online, selecionando um modelo existente.
-- O perfil atual usa 5 tentativas por classe, 15 ao todo; use `trials_per_class: 15`
-  para 45 tentativas. O embaralhamento balanceado é
+- O perfil atual usa 15 tentativas por classe, 45 ao todo. O embaralhamento balanceado é
   reprodutível (`rng_seed`). Repetições de um bloco usam outra semente.
 - Baseline: 3 s; em cada trial: atenção 2 s → cue 1,25 s → tentativa 3,75 s →
   pausa 2 s. Os tempos e a quantidade estão em `protocol`; a tentativa continua
@@ -80,10 +86,11 @@ mantidos; para um teste curto automático das duas etapas, use a validação aba
   Alertas de qualidade ficam visíveis no resultado e no relatório, sem diálogos bloqueantes.
   Blocos interrompidos são preservados e diagnosticados, mas não treinados.
 
-Os nomes de sessão `_PCA` e `_sem_feedback` foram mantidos para organização dos
-arquivos existentes. Nesta versão o PCA fica sempre na janela do experimentador;
-os dois blocos online usam o modelo escolhido e o mesmo contrato de controle.
-A apresentação do avatar continua no Unity.
+Novos arquivos online usam nomes explícitos `com_feedback` e `sem_feedback`.
+Arquivos antigos com `_PCA` continuam acessíveis e aparecem no catálogo como
+`com_feedback`, sem renomear o arquivo original. O PCA fica sempre na janela do
+experimentador; os dois blocos online usam o modelo escolhido e o mesmo contrato
+de controle. A apresentação do avatar continua no Unity.
 
 ## Registro inicial de olhos abertos e fechados
 
@@ -103,7 +110,7 @@ A espera entre condições não entra nos 45 s. Os marcadores CSV são `EYES_OPE
 (99), no mesmo relógio do EEG. Esses marcadores ficam **somente nos arquivos**;
 este registro não envia estímulos ao Unity. O comando é do experimentador.
 
-Os arquivos ficam em `sujeito/Ssessão/Repouso_olhos/resting` dentro da pasta de
+Os arquivos ficam em `grupo/sujeito/Ssessão/Repouso_olhos/resting` dentro da pasta de
 dados escolhida. O relatório mostra os tempos de cada condição, sinal, espectro,
 qualidade e eventual interrupção. Este registro não treina o modelo de imagética
 motora e não aparece na escolha dos CSVs de treino. Também funciona em simulação.
@@ -344,19 +351,60 @@ não comprova que o Unity recebeu/desenhou cada estímulo: confira sua conexão.
 ## Arquivos e manutenção
 
 A **Pasta dos dados** escolhida na preparação é a base de todos os arquivos da sessão.
-O padrão é `~/BCI_Dados`, na pasta pessoal, fora do projeto. Para tornar outra pasta
-o padrão das próximas execuções, altere `experiment.log_root` no `config.yaml`.
+O padrão é `~/BCI_Dados`, na pasta pessoal, fora do projeto. A interface lembra a
+última pasta e a identificação selecionada; uma configuração explícita de outra
+pasta em `experiment.log_root` prevalece. Essa preferência fica na configuração
+do usuário do computador, separada do repositório e do cadastro dos participantes.
 O programa valida a permissão de gravação e recusa destinos dentro do projeto,
 inclusive por links simbólicos. Dados existentes não são movidos automaticamente.
 
-`<pasta_dos_dados>/<sujeito>/S<sessão>/<tipo>/train/` guarda a execução/imagética;
-`<pasta_dos_dados>/<sujeito>/S<sessão>/online/` guarda os blocos online.
+```text
+<pasta_dos_dados>/
+  sessions.csv
+  dataset_index.csv
+  CTRL/
+    P001/
+      S1/
+        session.json
+        Repouso_olhos/resting/
+        EM_treino/train/
+        IM_treino/train/
+        IM_online_target_com_feedback/online/
+        IM_online_target_sem_feedback/online/
+```
+
 Cada par de CSVs compartilha um identificador único. O JSON ao lado do sinal
 registra conclusão/interrupção, configuração efetiva, sequência e modelo ativo.
 `_model/` guarda cada treino e seu mapa; `_qc/` guarda cada relatório.
 
+O cadastro é **por participante e sessão**: `session.json` preserva os campos
+mesmo se uma planilha estiver aberta; `sessions.csv` reúne uma linha por sessão.
+Uma nova sessão pré-preenche os dados do participante, com a data de hoje. Confira
+a data, a touca e o experimentador/a; mudanças não alteram sessões anteriores.
+O botão **Atualizar tabelas com os dados existentes** recompõe as tabelas a partir
+dos arquivos da pasta e completa participante, sessão, tipo de bloco e data quando
+esses dados estão disponíveis. Grupos antigos desconhecidos ficam `UNASSIGNED`
+até serem cadastrados. A leitura de dados e modelos aceita também a organização
+antiga, sem mover ou renomear os arquivos.
+
+`dataset_index.csv` reúne uma linha por bloco, com cadastro, comentário, condição
+de feedback, caminhos relativos, tamanho do sinal em bytes/MiB, horários e estado
+de conclusão. `status=partial` identifica interrupção; `interrupt_reason` informa
+o motivo. Arquivos antigos sem essa informação ficam `unknown`: tamanho pequeno
+sozinho não prova uma interrupção. Os campos de análise da tabela existente
+(`include`, `bad_channels`, `exclude_trials`, `reason`, `train_run_id` e colunas
+adicionais) são preservados nas atualizações. `reason` continua reservado à
+curadoria; `comment` contém as anotações do experimentador/a.
+
+As anotações são salvas também no JSON do sinal, no `quality.json` e no relatório
+HTML, sem refazer treino ou figuras. As análises carregam o cadastro da sessão
+automaticamente. Para transportar os dados, copie a pasta inteira e selecione-a
+na interface do outro computador. Ao clonar apenas o projeto em outro laboratório,
+o cadastro e os dados daquele laboratório começam na pasta externa escolhida lá.
+
 - `main.py`: fluxo das fases, escolha do modelo e supervisão dos componentes.
 - `operator.py`: janela de operação; `protocol.py`: sequência/tempos.
+- `catalog.py`: cadastro, índice e anotações; `theme.py`: cores da interface.
 - `signal_preview.py`: snapshot ao vivo e após o bloco; `storage.py`: destino dos dados.
 - `acquisition.py`: perfis, descoberta LSL, seleção de canais e unidades.
 - `report.py` e `report_template.html`: figuras de desempenho e relatório offline.

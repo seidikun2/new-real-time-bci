@@ -25,7 +25,8 @@ from bci_core.intention_control import run_intention_controller
 from bci_core.decoder_calibration import run_calibration
 from bci_core.check_data import run_check_data
 from bci_core.data import find_marker_signal_pairs
-from bci_core.storage import external_path, prepare_data_root
+from bci_core.storage import external_path, prepare_data_root, session_roots, canonical_block
+from bci_core.catalog import index_recording
 from bci_core.realtime import RealtimeMonitor
 from bci_core.resting_state import (RESTING_SESSION, RESTING_LABEL, resting_options,
                                     resting_schedule, resting_marker, run_resting)
@@ -34,12 +35,12 @@ PROJECT = Path(__file__).resolve().parent
 
 
 def session_root(cfg):
-    return external_path(cfg.experiment.log_root) / cfg.experiment.subject_id / f'S{cfg.experiment.session_id}'
+    return session_roots(cfg)[0]
 
 
 def with_session(cfg, session_type):
     result = copy.deepcopy(cfg)
-    result.experiment.session_type = session_type
+    result.experiment.session_type = canonical_block(session_type)
     result._raw_config['experiment'] = asdict(result.experiment)
     return result
 
@@ -62,14 +63,14 @@ def validate_model(cfg, reference, check_rate=True):
 
 def list_models(cfg):
     rows = []
-    for path in session_root(cfg).rglob('model_meta.json'):
+    for path in (p for root in session_roots(cfg) for p in root.rglob('model_meta.json')):
         try:
             meta = json.loads(path.read_text(encoding='utf-8'))
             if meta.get('classifier_input') == 'tangent_space' and meta.get('protocol_stage') == cfg.protocol.stage and (cfg.protocol.stage != 'single_target' or meta.get('online_target') == cfg.protocol.online_target):
                 cv = meta.get('cv', {})
                 acc = cv.get('acc_mean')
                 score = f'{acc:.1%}' if acc is not None else 'não estimada'
-                label = f"{meta.get('session_type')} | CV {score} | {meta.get('created_at_utc')} | {path.parent.name}"
+                label = f"{canonical_block(meta.get('session_type'))} | CV {score} | {meta.get('created_at_utc')} | {path.parent.name}"
                 rows.append((label, str(path.parent)))
         except (ValueError, OSError):
             continue
@@ -93,7 +94,7 @@ def choose_model(cfg, operator):
                 reference = str(Path(filename).parent)
             elif action == 'data':
                 pairs = []
-                for folder in session_root(cfg).rglob('*'):
+                for folder in (p for root in session_roots(cfg) for p in root.rglob('*')):
                     if folder.is_dir() and folder.name in {'train', 'online'}:
                         pairs.extend(find_marker_signal_pairs(folder))
                 pair = operator.choose('Dados para retreinar', [(Path(s).name, (m, s)) for m, s in pairs])
@@ -289,6 +290,10 @@ def run_block(cfg, mode='train', model_ref=None, block_index=0, operator=None, a
                     'effective_config': {key: value for key, value in asdict(cfg).items() if key != '_raw_config'},
                     'schedule': [event.__dict__ for event in events], 'block_index': block_index}
         recorder.save_metadata(metadata)
+        try:
+            index_recording(recorder.signal_path, cfg.experiment.log_root)
+        except Exception as exc:
+            print(f'[cadastro] CSV e JSON preservados; tabela pendente: {exc}')
     return {'complete': complete, 'reason': reason, 'mode': mode, 'markers_file': str(recorder.marker_path.resolve()),
             'signal_file': str(recorder.signal_path.resolve())}
 
@@ -316,6 +321,10 @@ def analyze_block(cfg, block, operator=None):
     if not evaluation.get('not_applicable') and threshold is not None and (accuracy is None or accuracy < threshold):
         evaluation.setdefault('warnings', []).append(f'Acurácia abaixo do critério {threshold}: {accuracy}.')
     qc = run_check_data(cfg, markers_file=pair[0], signal_file=pair[1], evaluation=evaluation)
+    try:
+        index_recording(pair[1], cfg.experiment.log_root)
+    except Exception as exc:
+        print(f'[cadastro] Relatório preservado; tabela pendente: {exc}')
     return qc, evaluation
 
 

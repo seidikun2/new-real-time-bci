@@ -19,6 +19,13 @@ class PersistentOperatorTests(unittest.TestCase):
         self.cfg = load_config(str(ROOT / 'config.yaml'))
         self.output = tempfile.TemporaryDirectory()
         self.addCleanup(self.output.cleanup)
+        from unittest.mock import patch
+
+        settings = patch.dict(
+            os.environ, {'BCI_SETTINGS_PATH': str(Path(self.output.name) / 'preferences.json')}
+        )
+        settings.start()
+        self.addCleanup(settings.stop)
         self.cfg.experiment.log_root = self.output.name
 
     def assert_one_window(self):
@@ -27,6 +34,142 @@ class PersistentOperatorTests(unittest.TestCase):
                 yield child
                 yield from children(child)
         self.assertFalse(any(w.winfo_class() == 'Toplevel' for w in children(self.op.root)))
+
+    def test_registered_session_reloads_after_restart_and_laterality_selects_control_leg(self):
+        from bci_core.catalog import save_session, save_preferences
+        from bci_core.operator import Operator
+
+        record = dict(
+            group='LM',
+            subject='P001',
+            session='S2',
+            cap='M / 64 canais',
+            age='',
+            sex='',
+            laterality='left',
+            collection_date='2026-11-10',
+            experimenter='Ana',
+        )
+        save_session(self.output.name, record)
+        save_preferences(self.output.name, 'LM', 'P001', 2)
+        failures = []
+
+        def prepare():
+            try:
+                self.assertEqual(self.op.fields['group'].get(), 'LM')
+                self.assertEqual(self.op.fields['subject'].get(), 'P001')
+                self.assertEqual(self.op.fields['cap'].get(), 'M / 64 canais')
+                self.assertEqual(self.op.fields['experimenter'].get(), 'Ana')
+                self.assertEqual(self.op.fields['age'].get(), '')
+                self.op.fields['source'].set('Simulação')
+                self.op.action.set('prepare')
+            except Exception as exc:
+                failures.append(exc)
+                self.op.action.set('stop')
+
+        self.op.root.after(50, prepare)
+        self.assertTrue(self.op.configure(self.cfg), failures)
+        self.assertEqual(self.cfg.protocol.online_target, 'left')
+        self.assertEqual(self.cfg.experiment.group, 'LM')
+        self.assertEqual(self.cfg.experiment.session_id, 2)
+        self.op.close()
+        reopened = Operator()
+        self.addCleanup(reopened.close)
+        captured = {}
+
+        def inspect():
+            captured.update(
+                {
+                    key: reopened.fields[key].get()
+                    for key in ['group', 'subject', 'session', 'cap', 'experimenter', 'laterality']
+                }
+            )
+            reopened.action.set('stop')
+
+        reopened.root.after(50, inspect)
+        self.assertFalse(reopened.configure(self.cfg))
+        self.assertEqual(captured['subject'], 'P001')
+        self.assertEqual(captured['experimenter'], 'Ana')
+        self.assertEqual(captured['laterality'], 'Esquerda')
+
+    def test_new_session_prefills_profile_and_keeps_previous_session_unchanged(self):
+        from bci_core.catalog import save_session, save_preferences, session_defaults
+
+        save_session(
+            self.output.name,
+            dict(
+                group='CTRL',
+                subject='P002',
+                session='S1',
+                cap='G',
+                age='40',
+                sex='F',
+                laterality='right',
+                collection_date='2026-10-01',
+                experimenter='Ana',
+            ),
+        )
+        save_preferences(self.output.name, 'CTRL', 'P002', 1)
+        failures = []
+
+        def prepare():
+            try:
+                self.op.fields['session'].set('2')
+                self.op.load_registration()
+                self.assertEqual(self.op.fields['cap'].get(), 'G')
+                self.assertEqual(self.op.fields['age'].get(), '40')
+                self.op.fields['age'].set('')
+                self.op.fields['experimenter'].set('Bia')
+                self.op.action.set('prepare')
+            except Exception as exc:
+                failures.append(exc)
+                self.op.action.set('stop')
+
+        self.op.root.after(50, prepare)
+        self.assertTrue(self.op.configure(self.cfg), failures)
+        self.assertEqual(self.cfg.experiment.session_id, 2)
+        self.assertEqual(self.cfg.experiment.age, '')
+        self.assertEqual(
+            session_defaults(self.output.name, 'CTRL', 'P002', 1)['experimenter'], 'Ana'
+        )
+        self.assertEqual(
+            session_defaults(self.output.name, 'CTRL', 'P002', 2)['experimenter'], 'Bia'
+        )
+
+    def test_optional_block_comment_is_saved_before_next_and_absent_for_eyes(self):
+        from bci_core.receive_data_log import BlockRecorder
+        from bci_core.catalog import read_json, read_table
+        from bci_core.resting_state import RESTING_SESSION
+
+        self.op.cfg = self.cfg
+        recorder = BlockRecorder(self.cfg, 'train')
+        recorder.close()
+        recorder.signal_path.write_text('lsl_time_s,C3,C4\n1,2,3\n1.01,4,5\n')
+        block = dict(complete=True, signal_file=str(recorder.signal_path))
+
+        def annotate():
+            self.op.comment_widget.insert(
+                '1.0', 'Ruído breve em Cz.\nParticipante ajustou a postura.'
+            )
+            self.op.action.set('next')
+
+        self.op.root.after(50, annotate)
+        self.assertEqual(self.op.review_block('Imagética', block, {'issues': []}, {}), 'next')
+        text = read_json(recorder.signal_path.with_suffix('.json'))['comment']
+        self.assertIn('ajustou a postura', text)
+        self.assertEqual(
+            read_table(Path(self.output.name) / 'dataset_index.csv')[1][0]['comment'], text
+        )
+        self.cfg.experiment.session_type = RESTING_SESSION
+        captured = []
+
+        def inspect():
+            captured.append(self.op.comment_widget)
+            self.op.action.set('next')
+
+        self.op.root.after(50, inspect)
+        self.op.review_block('Olhos', block, {'issues': []}, {'not_applicable': True})
+        self.assertEqual(captured, [None])
 
     def test_resting_countdown_and_manual_closed_eyes_use_same_window(self):
         from bci_core.resting_state import RESTING_SESSION

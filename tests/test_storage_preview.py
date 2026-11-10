@@ -37,13 +37,16 @@ class StorageAndPreviewTests(unittest.TestCase):
 
     def test_session_path_cannot_fall_back_inside_project(self):
         self.cfg.experiment.log_root = str(PROJECT_ROOT.parent)
-        self.cfg.experiment.subject_id = PROJECT_ROOT.name
+        self.cfg.experiment.subject_id = '../' + PROJECT_ROOT.name
         with self.assertRaises(ValueError):
             make_log_dir(self.cfg, 'train')
         with tempfile.TemporaryDirectory() as folder:
             self.cfg.experiment.log_root = folder
             self.cfg.experiment.subject_id = 'P001'
-            self.assertEqual(make_log_dir(self.cfg, 'train'), Path(folder) / 'P001' / 'S1' / 'IM_treino' / 'train')
+            self.assertEqual(
+                make_log_dir(self.cfg, 'train'),
+                Path(folder) / 'TEST' / 'P001' / 'S1' / 'IM_treino' / 'train',
+            )
 
     def test_snapshot_is_last_five_seconds_and_envelope_keeps_spikes(self):
         t = np.arange(2000)/100

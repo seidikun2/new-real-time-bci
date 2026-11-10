@@ -3,8 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Tuple, Optional
 import yaml
-from .storage import DEFAULT_DATA_ROOT
-
+from .storage import DEFAULT_DATA_ROOT, GROUPS, canonical_block
 
 @dataclass
 class ExperimentConfig:
@@ -13,6 +12,13 @@ class ExperimentConfig:
     log_root: str
     exp_name: str
     session_type: str
+    group: str = 'TEST'
+    cap: str = ''
+    age: str = ''
+    sex: str = ''
+    laterality: str = 'right'
+    collection_date: str = ''
+    experimenter: str = ''
 
 
 @dataclass
@@ -151,11 +157,18 @@ def load_config(path: str = "config.yaml") -> AppConfig:
         raise ValueError("Use >=2 canais, pca_dim: 2 e cv_splits >=2.")
     exp_values = dict(subject_id="TEST", session_id=1, log_root=DEFAULT_DATA_ROOT, exp_name="TEST", session_type="IM_treino")
     exp_values.update(raw.get("experiment", {}))
+    exp_values.setdefault('laterality', raw.get('protocol', {}).get('online_target', 'right'))
     exp = ExperimentConfig(**exp_values)
+    if exp.group not in GROUPS:
+        raise ValueError('Grupo deve ser TEST, CTRL, LM ou LION.')
     for name in (exp.subject_id, exp.exp_name, exp.session_type):
         if not name or any(c in name for c in '/\\') or name in {".", ".."}:
             raise ValueError("Identificadores devem ser nomes simples, sem separadores de pasta.")
     p = raw.get("protocol", {})
+    for key, modes in p.items():
+        if key.startswith('online_modes') and isinstance(modes, list):
+            for mode in modes:
+                mode['session_type'] = canonical_block(mode['session_type'])
     stage = p.get("stage", "single_target")
     if stage not in {"single_target", "two_legs"}:
         raise ValueError("Etapa deve ser single_target ou two_legs.")

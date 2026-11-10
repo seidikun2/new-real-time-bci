@@ -1,6 +1,7 @@
 """OAS → espaço tangente completo → SVM linear. PCA é somente visual."""
 import json
 import pickle
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.svm import SVC
 
 from .acquisition import recording_config
-from .storage import external_path
+from .storage import external_path, canonical_block
 from .class_schema import class_details, training_label_map
 from .data import (read_signal_csv, read_markers_csv, select_channel_indices,
                    bandpass_causal, attempts_by_class, epoch_trials_sliding, timestamp_integrity)
@@ -142,27 +143,46 @@ def run_calibration(cfg, markers_file, signal_file):
                             f"{usable['trials_used']}/{usable['trials_total']} tentativas utilizáveis. "
                             'Filtro reiniciado entre segmentos; janelas não atravessam trechos excluídos.')
     meta = {
-        'schema_version': 2, 'feature_space': 'riemann', 'classifier_input': 'tangent_space',
+        'schema_version': 2,
+        'feature_space': 'riemann',
+        'classifier_input': 'tangent_space',
         'feature_dimensions': int(classifier.n_features_in_),
         'created_at_utc': datetime.now(timezone.utc).isoformat(),
-        'markers_file': str(Path(markers_file).resolve()), 'signal_file': str(signal_path),
-        'protocol_stage': cfg.protocol.stage, 'training_mode': cfg.protocol.training_mode,
-        'online_target': cfg.protocol.online_target, 'session_type': source_config.get('experiment', {}).get('session_type', cfg.experiment.session_type),
-        'channels_selected': selected, 'channel_indices': indices, 'fs_hz': fs,
+        'markers_file': str(Path(markers_file).resolve()),
+        'signal_file': str(signal_path),
+        'protocol_stage': cfg.protocol.stage,
+        'training_mode': cfg.protocol.training_mode,
+        'online_target': cfg.protocol.online_target,
+        'session_type': canonical_block(
+            source_config.get('experiment', {}).get('session_type', cfg.experiment.session_type)
+        ),
+        'channels_selected': selected,
+        'channel_indices': indices,
+        'fs_hz': fs,
         'signal_unit': getattr(cfg, '_recorded_unit', 'uV'),
+        'participant': asdict(cfg.experiment),
         'timing_warnings': list(audit.get('warnings', [])),
-        'warnings': warnings, 'usable_data': usable,
-        'timing_policy': {'method': audit.get('method'), 'validation_scope': audit.get('validation_scope'),
-                          'strict_raw_timestamps': audit.get('options', {}).get('strict_raw_timestamps'),
-                          'recovery_policy': recovery.get('policy'),
-                          'max_bad_duration_s': recovery.get('max_bad_duration_s')},
+        'warnings': warnings,
+        'usable_data': usable,
+        'timing_policy': {
+            'method': audit.get('method'),
+            'validation_scope': audit.get('validation_scope'),
+            'strict_raw_timestamps': audit.get('options', {}).get('strict_raw_timestamps'),
+            'recovery_policy': recovery.get('policy'),
+            'max_bad_duration_s': recovery.get('max_bad_duration_s'),
+        },
         'filter': {'band_hz': cfg.bp_band_hz, 'order': cfg.bp_order},
-        'window_s': cfg.window_s, 'step_s': cfg.step_s, 'trial_duration_s': cfg.trial_duration_s,
-        'classes_map': label_map, 'classes': details, 'cv': cv,
+        'window_s': cfg.window_s,
+        'step_s': cfg.step_s,
+        'trial_duration_s': cfg.trial_duration_s,
+        'classes_map': label_map,
+        'classes': details,
+        'cv': cv,
         'representation': representation['meta'],
         'pca_check_png': str(model_dir / 'pca_check.png'),
         'pca_explained_variance_ratio': pca.explained_variance_ratio_.tolist(),
-        'pca_map_json': str(model_dir / 'pca_map.json'), 'pca_map_png': str(model_dir / 'pca_map.png'),
+        'pca_map_json': str(model_dir / 'pca_map.json'),
+        'pca_map_png': str(model_dir / 'pca_map.png'),
         'pca_train_xlim': [representation['meta']['x_min'], representation['meta']['x_max']],
         'pca_train_ylim': [representation['meta']['y_min'], representation['meta']['y_max']],
         'probabilities_note': 'SVC probability=True; CV report evaluates predictions, not probability calibration.',

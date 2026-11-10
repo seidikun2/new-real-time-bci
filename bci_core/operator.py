@@ -1,19 +1,33 @@
 """Uma janela para preparar, coletar, revisar e avançar o protocolo."""
 import copy
+import csv
 import json
 import math
 import threading
 import time
 import webbrowser
 from dataclasses import asdict
+from datetime import date, datetime
 from pathlib import Path
 from queue import Queue, Empty
 
 from .acquisition import SOURCES, source_name, set_source, discover_signals
-from .storage import prepare_data_root
+from .storage import prepare_data_root, external_path, session_path, GROUPS, DEFAULT_DATA_ROOT
+from .catalog import (
+    read_json,
+    settings_path,
+    read_sessions,
+    session_defaults,
+    save_session,
+    save_preferences,
+    refresh_catalog,
+    save_block_comment,
+    context_for_signal,
+)
 from .signal_preview import SignalPreview
 from .timing_preview import TimingPreview
 from .resting_state import RESTING_SESSION, resting_options
+from .theme import PALETTE
 
 STAGES = {'single_target': 'Etapa 1 · alvo e repouso', 'two_legs': 'Etapa 2 · duas pernas e repouso'}
 PHASES = {'auto': 'Protocolo completo', 'execution': 'Execução motora', 'imagery': 'Imagética motora', 'online': 'Online'}
@@ -33,21 +47,82 @@ class Operator:
         style = ttk.Style(self.root)
         style.theme_use('clam')
         style.configure('.', font=(family, 11))
-        style.configure('TFrame', background='#f4f6f9')
-        style.configure('TLabel', background='#f4f6f9', foreground='#1e3448')
-        style.configure('Title.TLabel', font=(family, 23, 'bold'))
-        style.configure('Muted.TLabel', foreground='#63768a')
-        style.configure('Resting.TLabel', font=(family, 17, 'bold'), foreground='#22698b')
+        style.configure('TFrame', background=PALETTE['background'])
+        style.configure('TLabel', background=PALETTE['background'], foreground=PALETTE['ink'])
+        available_fonts = {name.lower() for name in font.families(self.root)}
+        serif = next(
+            (
+                name
+                for name in [
+                    'Georgia',
+                    'DejaVu Serif',
+                    'Liberation Serif',
+                    'Latin Modern Roman',
+                    'Times',
+                ]
+                if name.lower() in available_fonts
+            ),
+            family,
+        )
+        style.configure('Title.TLabel', font=(serif, 24, 'bold'))
+        style.configure('Muted.TLabel', foreground=PALETTE['muted'])
+        style.configure('Resting.TLabel', font=(family, 17, 'bold'), foreground=PALETTE['accent'])
         style.configure('Countdown.TLabel', font=(family, 30, 'bold'))
         style.configure('TButton', padding=(16, 10))
-        style.configure('Primary.TButton', background='#22698b', foreground='white')
-        style.map('Primary.TButton', background=[('active', '#185570')])
+        style.map('Primary.TButton', background=[('active', PALETTE['accent_hover'])])
         style.configure('TEntry', padding=8)
         style.configure('TCombobox', padding=7)
-        style.map('TCombobox', fieldbackground=[('readonly', 'white')])
+        style.map('TCombobox', fieldbackground=[('readonly', PALETTE['paper'])])
         style.configure('Treeview', rowheight=34)
-        style.configure('Link.TButton', foreground='#22698b', font=(family, 11, 'underline'), padding=(0, 4), background='#f4f6f9')
-        self.root.configure(background='#f4f6f9')
+        style.configure('TNotebook', background=PALETTE['background'], borderwidth=0)
+        style.configure(
+            'TNotebook.Tab',
+            padding=(16, 9),
+            background=PALETTE['sand'],
+            foreground=PALETTE['muted'],
+        )
+        style.map(
+            'TNotebook.Tab',
+            background=[('selected', PALETTE['paper'])],
+            foreground=[('selected', PALETTE['accent'])],
+        )
+        style.configure(
+            'Horizontal.TProgressbar', background=PALETTE['accent'], troughcolor=PALETTE['sand']
+        )
+        style.configure(
+            'Treeview',
+            background=PALETTE['paper'],
+            fieldbackground=PALETTE['paper'],
+            foreground=PALETTE['ink'],
+        )
+        style.configure('Treeview.Heading', background=PALETTE['sand'], foreground=PALETTE['ink'])
+        style.configure(
+            'TButton',
+            background=PALETTE['paper'],
+            foreground=PALETTE['ink'],
+            bordercolor=PALETTE['border'],
+        )
+        style.configure('Primary.TButton', background=PALETTE['accent'], foreground='white')
+        style.configure('TEntry', fieldbackground=PALETTE['paper'], foreground=PALETTE['ink'])
+        style.configure(
+            'TCombobox',
+            foreground=PALETTE['ink'],
+            selectbackground=PALETTE['sand'],
+            selectforeground=PALETTE['ink'],
+        )
+        style.map(
+            'Treeview',
+            background=[('selected', PALETTE['sand'])],
+            foreground=[('selected', PALETTE['ink'])],
+        )
+        style.configure(
+            'Link.TButton',
+            foreground=PALETTE['accent'],
+            font=(family, 11, 'underline'),
+            padding=(0, 4),
+            background=PALETTE['background'],
+        )
+        self.root.configure(background=PALETTE['background'])
         self.shell = ttk.Frame(self.root, padding=24)
         self.shell.pack(fill='both', expand=True)
         header = ttk.Frame(self.shell)
@@ -76,14 +151,20 @@ class Operator:
         self.model_ref = None
         self.cfg = None
         self.live_inlet = None
+        self.comment_widget = None
+        self.comment_after = None
         self.root.protocol('WM_DELETE_WINDOW', self.request_close)
 
     def request_close(self):
+        self.flush_comment()
+        if getattr(self, '_registration_dirty', False):
+            self.save_registration()
         self.closing = self.cancelled = True
         self.note.set('Encerrando a sessão. A gravação será salva; aguarde a operação atual terminar.')
         self.action.set('stop')
 
     def page(self, title, subtitle=''):
+        self.comment_widget = None
         self.title.set(title)
         self.subtitle.set(subtitle)
         for container in (self.body, self.buttons):
@@ -111,65 +192,314 @@ class Operator:
 
     def configure(self, cfg, acquisition_duration=None):
         self.cfg = cfg
-        body = self.page('Preparar sessão', 'Preencha o participante e escolha a etapa. Os ajustes do equipamento ficam em Parâmetros.')
+        self._registration_dirty = False
+        self._registration_after = None
+        self._loaded_identity = None
+        self._catalog_root = None
+        preferences = read_json(settings_path())
+        configured_root = str(Path(cfg.experiment.log_root).expanduser().resolve())
+        default_root = str(Path(DEFAULT_DATA_ROOT).expanduser().resolve())
+        use_preferences = preferences.get('data_root') and configured_root in {
+            default_root,
+            preferences['data_root'],
+        }
+        root_value = preferences['data_root'] if use_preferences else configured_root
+        initial_group = (
+            preferences.get('group', cfg.experiment.group)
+            if use_preferences
+            else cfg.experiment.group
+        )
+        initial_subject = (
+            preferences.get('subject', cfg.experiment.subject_id)
+            if use_preferences
+            else cfg.experiment.subject_id
+        )
+        initial_session = (
+            preferences.get('session', cfg.experiment.session_id)
+            if use_preferences
+            else cfg.experiment.session_id
+        )
+        body = self.page(
+            'Preparar sessão',
+            'Selecione grupo, participante e sessão. O cadastro salvo é carregado automaticamente.',
+        )
         if acquisition_duration is not None:
             self.title.set(f'Verificar aquisição · {acquisition_duration/60:g} min')
             self.subtitle.set('Escolha a aquisição e a pasta dos dados. Este teste não exige Unity nem modelo.')
         self.fields = {}
-        choices = {'stage': STAGES, 'target': {'left': 'Esquerda', 'right': 'Direita'}, 'source': SOURCES}
-        items = [('Sujeito', 'subject', cfg.experiment.subject_id), ('Sessão', 'session', str(cfg.experiment.session_id)),
-                 ('Etapa', 'stage', STAGES[cfg.protocol.stage]), ('Perna alvo', 'target', 'Esquerda' if cfg.protocol.online_target == 'left' else 'Direita'),
-                 ('Aquisição', 'source', SOURCES[source_name(cfg)])]
-        if acquisition_duration is not None:
-            items = [item for item in items if item[1] not in {'stage', 'target'}]
-        for i, (label, key, value) in enumerate(items):
-            cell = self.ttk.Frame(body)
-            cell.grid(row=i//2, column=i%2, sticky='ew', padx=(0, 20), pady=12)
-            self.ttk.Label(cell, text=label).pack(anchor='w', pady=(0, 6))
+        identity = self.ttk.Frame(body)
+        identity.pack(fill='x', pady=(0, 12))
+
+        def field(parent, label, key, value, row, column, choices=None, editable=False):
+            cell = self.ttk.Frame(parent)
+            cell.grid(row=row, column=column, sticky='ew', padx=(0, 16), pady=7)
+            self.ttk.Label(cell, text=label).pack(anchor='w', pady=(0, 5))
             variable = self.tk.StringVar(value=value)
-            widget = self.ttk.Combobox(cell, textvariable=variable, values=list(choices[key].values()), state='readonly') if key in choices else self.ttk.Entry(cell, textvariable=variable)
+            widget = (
+                self.ttk.Combobox(
+                    cell,
+                    textvariable=variable,
+                    values=choices,
+                    state='normal' if editable else 'readonly',
+                )
+                if choices is not None
+                else self.ttk.Entry(cell, textvariable=variable)
+            )
             widget.pack(fill='x')
             self.fields[key] = variable
-        folder = self.ttk.Frame(body)
-        folder.grid(row=(len(items)+1)//2, column=0, columnspan=2, sticky='ew', pady=12)
-        self.ttk.Label(folder, text='Pasta dos dados · fora do projeto').pack(anchor='w', pady=(0, 6))
-        data_root = self.tk.StringVar(value=str(Path(cfg.experiment.log_root).expanduser()))
-        self.fields['data_root'] = data_root
-        self.ttk.Button(folder, text='Escolher pasta…', command=lambda: self.choose_data_root(data_root)).pack(side='right', padx=(8, 0))
-        self.ttk.Entry(folder, textvariable=data_root).pack(side='left', fill='x', expand=True)
-        body.columnconfigure(0, weight=1, uniform='field')
-        body.columnconfigure(1, weight=1, uniform='field')
+            parent.columnconfigure(column, weight=1, uniform='form')
+            return widget
+
+        group_widget = field(identity, 'Grupo', 'group', initial_group, 0, 0, list(GROUPS))
+        self.subject_selector = field(
+            identity, 'Participante', 'subject', initial_subject, 0, 1, [], True
+        )
+        session_widget = field(
+            identity, 'Sessão', 'session', str(initial_session).lstrip('Ss'), 0, 2
+        )
+        self.configuration_tabs = self.ttk.Notebook(body)
+        self.configuration_tabs.pack(fill='both', expand=True)
+        collection = self.ttk.Frame(self.configuration_tabs, padding=14)
+        registration = self.ttk.Frame(self.configuration_tabs, padding=14)
+        self.configuration_tabs.add(collection, text='Coleta')
+        self.configuration_tabs.add(registration, text='Cadastro da sessão')
+        field(
+            collection,
+            'Aquisição',
+            'source',
+            SOURCES[source_name(cfg)],
+            0,
+            0,
+            list(SOURCES.values()),
+        )
+        if acquisition_duration is None:
+            field(
+                collection,
+                'Etapa',
+                'stage',
+                STAGES[cfg.protocol.stage],
+                0,
+                1,
+                list(STAGES.values()),
+            )
+        folder = self.ttk.Frame(collection)
+        folder.grid(row=1, column=0, columnspan=2, sticky='ew', pady=15)
+        self.ttk.Label(folder, text='Pasta de dados deste laboratório · fora do projeto').pack(
+            anchor='w', pady=(0, 6)
+        )
+        self.fields['data_root'] = self.tk.StringVar(value=root_value)
+        self.ttk.Button(
+            folder,
+            text='Escolher pasta…',
+            command=lambda: self.choose_data_root(self.fields['data_root']),
+        ).pack(side='right', padx=(8, 0))
+        folder_entry = self.ttk.Entry(folder, textvariable=self.fields['data_root'])
+        folder_entry.pack(side='left', fill='x', expand=True)
+        self.registration_status = self.tk.StringVar(value='Cadastro não carregado.')
+        self.ttk.Label(
+            collection, textvariable=self.registration_status, wraplength=860, style='Muted.TLabel'
+        ).grid(row=2, columnspan=2, sticky='w', pady=12)
+        self.ttk.Button(
+            collection,
+            text='Editar cadastro da sessão',
+            command=lambda: self.configuration_tabs.select(registration),
+        ).grid(row=3, column=0, sticky='w')
+        field(registration, 'Touca', 'cap', '', 0, 0)
+        field(
+            registration,
+            'Lateralidade · perna de controle',
+            'laterality',
+            'Direita',
+            0,
+            1,
+            ['Esquerda', 'Direita'],
+        )
+        field(registration, 'Idade (opcional)', 'age', '', 1, 0)
+        field(
+            registration,
+            'Sexo (opcional)',
+            'sex',
+            'Não informado',
+            1,
+            1,
+            ['Não informado', 'Feminino', 'Masculino', 'Outro'],
+        )
+        field(registration, 'Data da coleta', 'collection_date', '', 2, 0)
+        field(registration, 'Experimentador/a · nome', 'experimenter', '', 2, 1)
+        self.ttk.Label(
+            registration,
+            text='Salvo automaticamente após editar. Em nova sessão, confira data e experimentador/a.\nA lateralidade define diretamente a perna usada na etapa de uma perna.',
+            wraplength=850,
+            style='Muted.TLabel',
+        ).grid(row=3, columnspan=2, sticky='w', pady=12)
+        self.ttk.Button(
+            registration, text='Salvar cadastro', command=lambda: self.save_registration(force=True)
+        ).grid(row=4, column=0, sticky='w')
+        self.ttk.Button(
+            registration,
+            text='Atualizar tabelas com os dados existentes',
+            command=lambda: self.load_registration(refresh=True),
+        ).grid(row=4, column=1, sticky='e')
+        for widget in [group_widget, self.subject_selector, session_widget, folder_entry]:
+            widget.bind('<FocusOut>', lambda event: self.load_registration())
+            widget.bind('<Return>', lambda event: self.load_registration())
+        group_widget.bind('<<ComboboxSelected>>', lambda event: self.load_registration())
+        self.subject_selector.bind('<<ComboboxSelected>>', lambda event: self.load_registration())
+        self._loading_registration = False
+        for key in ['cap', 'age', 'sex', 'laterality', 'collection_date', 'experimenter']:
+            self.fields[key].trace_add('write', self.registration_changed)
+        self.load_registration(refresh=True)
         self.button('Preparar protocolo', 'prepare', True)
         self.button('Encerrar', 'stop', side='left')
         while self.wait_action() == 'prepare':
             try:
-                subject = self.fields['subject'].get().strip()
-                session = int(self.fields['session'].get())
-                if not subject or subject in {'.', '..'} or any(c in subject for c in '/\\') or session < 1:
-                    raise ValueError('Informe sujeito sem barras e sessão inteira positiva.')
                 source = next(key for key, value in SOURCES.items() if value == self.fields['source'].get())
                 selected_root = prepare_data_root(self.fields['data_root'].get())
+                record = self.save_registration(force=True)
+                if record is None:
+                    continue
                 set_source(cfg, source)
                 cfg.experiment.log_root = selected_root
-                cfg.experiment.subject_id, cfg.experiment.session_id = subject, session
+                cfg.experiment.group = record['group']
+                cfg.experiment.subject_id = record['subject']
+                cfg.experiment.session_id = int(record['session'][1:])
+                for key in ['cap', 'age', 'sex', 'laterality', 'collection_date', 'experimenter']:
+                    setattr(cfg.experiment, key, record[key])
+                cfg.protocol.online_target = record['laterality']
                 if 'stage' in self.fields:
                     cfg.protocol.stage = next(key for key, value in STAGES.items() if value == self.fields['stage'].get())
-                    cfg.protocol.online_target = 'left' if self.fields['target'].get() == 'Esquerda' else 'right'
                 cfg.protocol.training_mode = 'target_vs_rest' if cfg.protocol.stage == 'single_target' else 'left_right_vs_rest'
                 cfg._raw_config['experiment'] = asdict(cfg.experiment)
                 cfg._raw_config['protocol'].update(stage=cfg.protocol.stage, online_target=cfg.protocol.online_target, training_mode=cfg.protocol.training_mode)
                 self.fields = {}
                 self.note.set('')
                 return True
-            except (ValueError, TypeError, StopIteration) as exc:
+            except (ValueError, TypeError, StopIteration, OSError) as exc:
                 self.notify(f'Confira os campos: {exc}')
+        if self._registration_dirty:
+            self.save_registration()
         return False
+
+    def registration_identity(self):
+        root = external_path(self.fields['data_root'].get())
+        group = self.fields['group'].get()
+        subject = self.fields['subject'].get().strip()
+        session = int(self.fields['session'].get())
+        session_path(root, group, subject, session)
+        return str(root), group, subject, session
+
+    def load_registration(self, refresh=False):
+        if not getattr(self, 'fields', {}).get('group'):
+            return
+        try:
+            identity = self.registration_identity()
+            if identity == self._loaded_identity and not refresh:
+                return
+            if self._registration_dirty and self._loaded_identity:
+                self.save_registration(identity=self._loaded_identity)
+            root, group, subject, session = identity
+            if Path(root).is_dir() and (refresh or self._catalog_root != root):
+                refresh_catalog(root)
+                self._catalog_root = root
+            rows = read_sessions(root)
+            self.subject_selector.configure(
+                values=sorted(
+                    {r['subject'] for r in rows if r.get('group') in {group, '', 'UNASSIGNED'}}
+                )
+            )
+            record = session_defaults(root, group, subject, session)
+            self._loading_registration = True
+            for key in ['cap', 'age', 'experimenter']:
+                self.fields[key].set(record.get(key, ''))
+            self.fields['sex'].set(
+                {'F': 'Feminino', 'M': 'Masculino'}.get(
+                    record.get('sex'), record.get('sex') or 'Não informado'
+                )
+            )
+            side = record.get('laterality') or self.cfg.protocol.online_target
+            self.fields['laterality'].set('Esquerda' if side == 'left' else 'Direita')
+            value = record.get('collection_date') or date.today().isoformat()
+            self.fields['collection_date'].set(datetime.fromisoformat(value).strftime('%d/%m/%Y'))
+            self._loaded_identity = identity
+            self._registration_dirty = False
+            self.registration_status.set(
+                (
+                    'Cadastro carregado'
+                    if record.get('registered') == '1'
+                    else 'Confira o cadastro desta sessão'
+                )
+                + f" · {group} / {subject} / S{session} · controle: {self.fields['laterality'].get()}"
+            )
+            if Path(root).is_dir():
+                try:
+                    save_preferences(root, group, subject, session)
+                except OSError:
+                    pass
+        except (ValueError, OSError, csv.Error) as exc:
+            self.registration_status.set(f'Cadastro: {exc}')
+        finally:
+            self._loading_registration = False
+
+    def registration_changed(self, *_):
+        if self._loading_registration:
+            return
+        self._registration_dirty = True
+        if self._registration_after is not None:
+            self.root.after_cancel(self._registration_after)
+        self._registration_after = self.root.after(600, self.save_registration)
+
+    def save_registration(self, force=False, identity=None):
+        if self._registration_after is not None:
+            self.root.after_cancel(self._registration_after)
+            self._registration_after = None
+        if not getattr(self, 'fields', {}).get('group'):
+            return None
+        try:
+            root, group, subject, session = identity or self.registration_identity()
+            if not Path(root).is_dir() and not force:
+                return None
+            prepare_data_root(root)
+            value = self.fields['collection_date'].get().strip()
+            collected = (
+                datetime.strptime(value, '%d/%m/%Y').date()
+                if '/' in value
+                else date.fromisoformat(value)
+            )
+            record = dict(
+                group=group,
+                subject=subject,
+                session=f'S{session}',
+                cap=self.fields['cap'].get(),
+                age=self.fields['age'].get(),
+                sex={'Feminino': 'F', 'Masculino': 'M', 'Não informado': ''}.get(
+                    self.fields['sex'].get(), self.fields['sex'].get()
+                ),
+                laterality='left' if self.fields['laterality'].get() == 'Esquerda' else 'right',
+                collection_date=collected.isoformat(),
+                experimenter=self.fields['experimenter'].get(),
+            )
+            saved = save_session(root, record)
+            try:
+                save_preferences(root, group, subject, session)
+            except OSError:
+                pass  # O cadastro principal já está preservado na pasta de dados.
+            self._registration_dirty = False
+            self._loaded_identity = (root, group, subject, session)
+            self.registration_status.set(
+                saved.get('_warning')
+                or f'Cadastro salvo · {group} / {subject} / S{session} · controle: {self.fields["laterality"].get()}'
+            )
+            return record
+        except (ValueError, OSError, csv.Error) as exc:
+            self.registration_status.set(f'Cadastro não salvo: {exc}')
+            return None
 
     def choose_data_root(self, variable):
         selected = self.filedialog.askdirectory(title='Pasta dos dados da sessão', parent=self.root,
                                                 initialdir=variable.get() if Path(variable.get()).is_dir() else str(Path.home()))
         if selected:
             variable.set(selected)
+            self.load_registration(refresh=True)
 
     def open_report(self):
         if self.report_path:
@@ -480,6 +810,38 @@ class Operator:
         if qc.get('issues'):
             messages.append(f"Qualidade: {len(qc['issues'])} ponto(s) de atenção. Consulte o relatório.")
         self.ttk.Label(self.body, text='\n'.join(messages), wraplength=950).pack(anchor='w', pady=5)
+        if not resting and block.get('signal_file'):
+            note = self.ttk.Frame(self.body)
+            note.pack(fill='x', pady=(4, 10))
+            self.ttk.Label(note, text='Anotações do bloco · opcional').pack(anchor='w', pady=(0, 4))
+            self.comment_status = self.tk.StringVar(
+                value='Salvo automaticamente nos dados e na tabela.'
+            )
+            self.comment_signal = block['signal_file']
+            self.comment_widget = self.tk.Text(
+                note,
+                height=3,
+                wrap='word',
+                font='TkDefaultFont',
+                background=PALETTE['paper'],
+                foreground=PALETTE['ink'],
+                insertbackground=PALETTE['accent'],
+                relief='solid',
+                borderwidth=1,
+                padx=10,
+                pady=8,
+                undo=True,
+            )
+            self.comment_widget.pack(fill='x')
+            self._comment_saved = context_for_signal(
+                self.comment_signal, self.cfg.experiment.log_root
+            ).get('comment', '')
+            self.comment_widget.insert('1.0', self._comment_saved)
+            self.comment_widget.edit_modified(False)
+            self.comment_widget.bind('<<Modified>>', self.comment_changed)
+            self.ttk.Label(note, textvariable=self.comment_status, style='Muted.TLabel').pack(
+                anchor='w'
+            )
         tabs = self.ttk.Notebook(self.body)
         tabs.pack(fill='both', expand=True)
         signal_tab = self.ttk.Frame(tabs)
@@ -522,7 +884,34 @@ class Operator:
         if self.model_ref:
             self.button('Trocar modelo', 'model')
         self.button('Encerrar sessão', 'stop')
-        return self.wait_action()
+        action = self.wait_action()
+        self.flush_comment()
+        return action
+
+    def comment_changed(self, *_):
+        if self.comment_widget is None or not self.comment_widget.edit_modified():
+            return
+        self.comment_widget.edit_modified(False)
+        self.comment_status.set('Salvando anotações…')
+        if self.comment_after is not None:
+            self.root.after_cancel(self.comment_after)
+        self.comment_after = self.root.after(500, self.flush_comment)
+
+    def flush_comment(self):
+        if self.comment_after is not None:
+            self.root.after_cancel(self.comment_after)
+            self.comment_after = None
+        if self.comment_widget is None:
+            return
+        try:
+            text = self.comment_widget.get('1.0', 'end-1c')
+            if text == self._comment_saved:
+                return
+            warning = save_block_comment(self.comment_signal, text, self.cfg.experiment.log_root)
+            self._comment_saved = text
+            self.comment_status.set(warning or 'Anotações salvas nos dados e na tabela.')
+        except (OSError, ValueError, self.tk.TclError) as exc:
+            self.comment_status.set(f'Não foi possível salvar as anotações: {exc}')
 
     def choose(self, title, rows):
         self.page(title, 'Escolha os dados ou o modelo que serão usados no online.')
@@ -555,4 +944,10 @@ class Operator:
         self.wait_action()
 
     def close(self):
-        self.root.destroy()
+        try:
+            self.flush_comment()
+            if getattr(self, '_registration_dirty', False):
+                self.save_registration()
+            self.root.destroy()
+        except self.tk.TclError:
+            pass

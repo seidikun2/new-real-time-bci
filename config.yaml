@@ -24,6 +24,7 @@
 # #############################################################################
 
 experiment:
+  group         : "TEST"  # TEST | CTRL | LM | LION; cadastro por sessão na pasta de dados
   subject_id    : "TEST"
   session_id    : 1
   exp_name      : "TEST"
@@ -58,24 +59,24 @@ protocol:
   # Online da ETAPA 1. PCA é mostrado somente ao experimentador nos dois blocos.
   online_modes_single_target:
     - name          : "target_feedback"
-      label         : "Online alvo · bloco 1"
-      session_type  : "IM_online_target_PCA"
+      label         : "Online alvo · com feedback"
+      session_type  : "IM_online_target_com_feedback"
 
     - name          : "target_no_feedback"
-      label         : "Online alvo · bloco 2"
+      label         : "Online alvo · sem feedback"
       session_type  : "IM_online_target_sem_feedback"
 
   # Online da ETAPA 2 — mesma sequência da etapa 1.
   online_modes_two_legs:
     - name          : "two_legs_feedback"
-      label         : "Online duas pernas · bloco 1"
-      session_type  : "IM_online_duas_pernas_PCA"
+      label         : "Online duas pernas · com feedback"
+      session_type  : "IM_online_duas_pernas_com_feedback"
 
     - name          : "two_legs_no_feedback"
-      label         : "Online duas pernas · bloco 2"
+      label         : "Online duas pernas · sem feedback"
       session_type  : "IM_online_duas_pernas_sem_feedback"
 
-  # Perfil atual: 20 tentativas por classe = 60 trials; use 15 para 45 trials.
+  # Perfil atual: 15 tentativas por classe = 45 trials.
   trials_per_class : 15
   baseline_s       : 3.0
   attention_s      : 2.0

@@ -13,7 +13,8 @@ from datetime import datetime
 from pathlib import Path
 
 from .acquisition import stream_layout
-from .storage import external_path
+from .storage import external_path, session_path, canonical_block
+from .catalog import ensure_session, index_recording
 from .lsl_timing import timing_options, signal_processing_flags, TimingMonitor
 
 from pylsl import StreamInlet, local_clock, resolve_byprop
@@ -21,8 +22,14 @@ from pylsl import StreamInlet, local_clock, resolve_byprop
 
 def make_log_dir(cfg, mode):
     cfg.experiment.log_root = str(external_path(cfg.experiment.log_root))
-    root = Path(cfg.experiment.log_root) / cfg.experiment.subject_id / f'S{cfg.experiment.session_id}'
-    folder = root / 'online' if mode == 'online' else root / cfg.experiment.session_type / mode
+    root = session_path(
+        cfg.experiment.log_root,
+        cfg.experiment.group,
+        cfg.experiment.subject_id,
+        cfg.experiment.session_id,
+    )
+    cfg.experiment.session_type = canonical_block(cfg.experiment.session_type)
+    folder = root / cfg.experiment.session_type / mode
     folder = external_path(folder)
     if not folder.is_relative_to(Path(cfg.experiment.log_root)):
         raise ValueError('A sessão deve ficar dentro da pasta de dados escolhida.')
@@ -94,6 +101,11 @@ class BlockRecorder:
                          'requested_at': self.requested_at, 'mode': mode,
                          'config': {**cfg._raw_config, 'experiment': asdict(cfg.experiment), 'runtime': asdict(cfg.runtime)}}
         self.save_metadata(self.metadata)
+        try:
+            ensure_session(cfg)
+            index_recording(self.signal_path, cfg.experiment.log_root)
+        except Exception as exc:
+            print(f'[cadastro] Metadados preservados no JSON; tabela pendente: {exc}')
 
     def save_metadata(self, metadata):
         path = self.signal_path.with_suffix('.json')

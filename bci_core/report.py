@@ -16,7 +16,8 @@ from .acquisition import SOURCES
 from .timing_report import timing_report
 from .realtime_report import realtime_report
 from .resting_state import RESTING_LABEL
-
+from .catalog import context_for_signal
+from .storage import canonical_block, feedback_condition
 
 def collection_info(cfg, signal_file):
     """Identificação original da coleta, independente da configuração ao reabrir."""
@@ -27,8 +28,11 @@ def collection_info(cfg, signal_file):
     except (OSError, ValueError):
         metadata = {}
     raw = metadata.get('config', {})
+    context = context_for_signal(signal_file, cfg.experiment.log_root)
     original = metadata.get('effective_config', {}).get('experiment') or raw.get('experiment', {})
-    session = original.get('session_type', cfg.experiment.session_type)
+    session = canonical_block(
+        original.get('session_type') or context.get('block') or cfg.experiment.session_type
+    )
     protocol = raw.get('protocol', {})
     label = session
     if protocol.get('acquisition_test_s'):
@@ -46,6 +50,9 @@ def collection_info(cfg, signal_file):
                     label = mode.get('label', label)
     if metadata.get('mode') == 'resting':
         label = RESTING_LABEL
+    condition = feedback_condition(session)
+    if condition:
+        label = 'Online · ' + ('sem feedback' if condition == 'sem_feedback' else 'com feedback')
     started, ended = metadata.get('started_at'), metadata.get('ended_at')
     # Arquivos anteriores não tinham esses campos. Use o horário do CSV, nunca
     # mtime do arquivo ou o momento em que o relatório foi gerado.
@@ -66,12 +73,33 @@ def collection_info(cfg, signal_file):
     source = (metadata.get('stream') or {}).get('source') or runtime.get('source')
     if not source and 'simulate_signal' in runtime:
         source = 'simulator' if runtime['simulate_signal'] else 'hiamp'
-    return {'block_type': session, 'block_label': label,
-            'subject': original.get('subject_id', cfg.experiment.subject_id),
-            'session_id': original.get('session_id', cfg.experiment.session_id),
-            'started_at': started, 'ended_at': ended, 'requested_at': metadata.get('requested_at'),
-            'complete': complete if isinstance(complete, bool) else None,
-            'reason': metadata.get('reason'), 'filename': path.name, 'source': source, 'mode': metadata.get('mode')}
+    return {
+        'block_type': session,
+        'block_label': label,
+        'subject': original.get('subject_id')
+        or context.get('subject')
+        or cfg.experiment.subject_id,
+        'session_id': original.get('session_id')
+        or int(context.get('session', f'S{cfg.experiment.session_id}')[1:]),
+        'started_at': started,
+        'ended_at': ended,
+        'requested_at': metadata.get('requested_at'),
+        'complete': complete if isinstance(complete, bool) else None,
+        'reason': metadata.get('reason'),
+        'filename': path.name,
+        'source': source,
+        'mode': context.get('mode'),
+        'participant': context,
+        'comment': context.get('comment', ''),
+    }
+
+
+def comment_section(comment):
+    text = html.escape(comment) if comment else 'Sem anotações para este bloco.'
+    return (
+        '<!-- BLOCK_COMMENT_START --><section class="card" id="block-comment"><h2>Anotações do bloco</h2>'
+        f'<p style="white-space:pre-wrap">{text}</p></section><!-- BLOCK_COMMENT_END -->'
+    )
 
 
 def display_time(value):
@@ -168,28 +196,83 @@ def write_report(cfg, report, evaluation, signal_file, folder):
     fields = {
         'timing': timing_report(report.get('timing_audit', {}), folder),
         'realtime': realtime_report(report.get('realtime', {}), folder),
-        'session': escape(collection['block_type']), 'block_label': escape(collection['block_label']),
-        'subject': escape(collection['subject']), 'session_id': escape(collection['session_id']),
+        'session': escape(collection['block_type']),
+        'block_label': escape(collection['block_label']),
+        'subject': escape(collection['subject']),
+        'session_id': escape(collection['session_id']),
         'source': escape(SOURCES.get(collection.get('source') or report.get('source'), 'EEG')),
-        'filename': escape(Path(signal_file).name), 'status': status,
+        'filename': escape(Path(signal_file).name),
+        'status': status,
         'status_class': 'warn' if report['issues'] else 'good',
-        'outcome': outcome, 'outcome_class': outcome_class,
-        'outcome_message': f'<div class="collection-alert {outcome_class}">{escape(message)}</div>' if message else '',
+        'outcome': outcome,
+        'outcome_class': outcome_class,
+        'outcome_message': (
+            f'<div class="collection-alert {outcome_class}">{escape(message)}</div>'
+            if message
+            else ''
+        ),
         'started_at': escape(display_time(collection['started_at'])),
         'ended_at': escape(display_time(collection['ended_at'])),
         'request_note': escape(request_note),
-        'samples': f"{report['samples']:,}".replace(',', '.'), 'fs': f'{fs:.1f}' if fs else '—',
-        'channel_count': str(len(report['channels'])), 'accuracy': metric(cv.get('acc_mean')),
-        'balanced': metric(cv.get('balanced_accuracy')), 'trial_accuracy': metric(cv.get('trial_accuracy')),
-        'summary': escape(summary), 'notes': notes, 'alerts': alerts, 'channel_rows': ''.join(rows),
-        'performance_note': '<p>O resultado é uma estimativa offline deste bloco; não substitui o modelo ativo no online.</p>' if available else '',
-        'pca': figure(pca_available, 'pca_check.png', 'Mapa PCA disponível após o treino deste bloco.'),
-        'matrix': figure(plot_matrix, 'confusion_matrix.png', 'Matriz indisponível até concluir a validação cruzada.'),
+        'samples': f"{report['samples']:,}".replace(',', '.'),
+        'fs': f'{fs:.1f}' if fs else '—',
+        'channel_count': str(len(report['channels'])),
+        'accuracy': metric(cv.get('acc_mean')),
+        'balanced': metric(cv.get('balanced_accuracy')),
+        'trial_accuracy': metric(cv.get('trial_accuracy')),
+        'summary': escape(summary),
+        'notes': notes,
+        'alerts': alerts,
+        'channel_rows': ''.join(rows),
+        'performance_note': (
+            '<p>O resultado é uma estimativa offline deste bloco; não substitui o modelo ativo no online.</p>'
+            if available
+            else ''
+        ),
+        'pca': figure(
+            pca_available, 'pca_check.png', 'Mapa PCA disponível após o treino deste bloco.'
+        ),
+        'matrix': figure(
+            plot_matrix,
+            'confusion_matrix.png',
+            'Matriz indisponível até concluir a validação cruzada.',
+        ),
         'thresholds': escape(json.dumps(report['thresholds'], ensure_ascii=False)),
-        'unit': escape('escala original (unidade não informada)' if report['unit'] == 'native' else report['unit']),
-        'overview': figure(report['samples'] > 1 and (folder / 'overview.png').exists(), 'overview.png', 'Sem sinal suficiente para gerar os gráficos.'),
-        'channels_download': ' &nbsp;·&nbsp; <a href="channels.csv">Tabela CSV</a>' if (folder / 'channels.csv').exists() else '',
+        'unit': escape(
+            'escala original (unidade não informada)'
+            if report['unit'] == 'native'
+            else report['unit']
+        ),
+        'overview': figure(
+            report['samples'] > 1 and (folder / 'overview.png').exists(),
+            'overview.png',
+            'Sem sinal suficiente para gerar os gráficos.',
+        ),
+        'channels_download': (
+            ' &nbsp;·&nbsp; <a href="channels.csv">Tabela CSV</a>'
+            if (folder / 'channels.csv').exists()
+            else ''
+        ),
+        'block_comment': (
+            ''
+            if collection.get('mode') == 'resting'
+            else comment_section(report.get('comment', collection.get('comment', '')))
+        ),
     }
+    participant = collection.get('participant', {})
+    fields['registration'] = ' &nbsp;·&nbsp; '.join(
+        escape(f'{label}: {participant[key]}')
+        for key, label in [
+            ('group', 'Grupo'),
+            ('cap', 'Touca'),
+            ('age', 'Idade'),
+            ('sex', 'Sexo'),
+            ('laterality', 'Lateralidade'),
+            ('collection_date', 'Data da sessão'),
+            ('experimenter', 'Experimentador/a'),
+        ]
+        if participant.get(key)
+    )
     cards = [('Acurácia média · CV', fields['accuracy'], 'Predições fora do fold de treino'),
              ('Acurácia balanceada', fields['balanced'], 'Mesmo peso para cada classe'),
              ('Voto por tentativa', fields['trial_accuracy'], 'Decisão agregada no trial'),
