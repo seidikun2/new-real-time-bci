@@ -52,7 +52,8 @@ Em cada sessão:
    Novos treinos não substituem o modelo ativo; **Trocar modelo** fica disponível
    ao revisar um bloco online.
 7. Ao terminar ou usar **Encerrar sessão**, a mesma janela mostra o **Resumo da
-   sessão**: horário, bloco, etapa, conclusão/interrupção, CV média ± desvio,
+   sessão**: grupo, sujeito, sessão, data e horário, bloco, etapa,
+   conclusão/interrupção, CV média ± desvio,
    tamanho do sinal e comentários. Selecione uma linha para ver a pasta daquele
    bloco e abrir seu relatório. A aba **Editar anotações** permite alterar o
    comentário da linha selecionada. As alterações são salvas

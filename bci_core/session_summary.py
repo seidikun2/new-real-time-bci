@@ -45,7 +45,7 @@ def collection_time(row):
             if value
             else datetime.strptime(row['stamp'][:15], '%Y%m%d_%H%M%S')
         )
-        return stamp.strftime('%d/%m %H:%M:%S')
+        return stamp.strftime('%d/%m/%Y %H:%M:%S')
     except (ValueError, KeyError, TypeError):
         return 'Não registrado'
 
@@ -110,7 +110,10 @@ class SessionSummary:
         area = ttk.Frame(blocks_page)
         area.grid(row=0, column=0, sticky='nsew')
         columns = [
-            ('time', 'Coleta', 125),
+            ('group', 'Grupo', 72),
+            ('subject', 'Sujeito', 100),
+            ('session', 'Sessão', 70),
+            ('time', 'Data / horário', 165),
             ('block', 'Bloco', 205),
             ('stage', 'Etapa', 80),
             ('status', 'Estado', 120),
@@ -218,6 +221,9 @@ class SessionSummary:
             'unknown': 'Não confirmado',
         }.get(row.get('status'), 'Indisponível')
         return (
+            row.get('group') or '—',
+            row.get('subject') or '—',
+            row.get('session') or '—',
             collection_time(row),
             block_label(row),
             {'single_target': '1 perna', 'two_legs': '2 pernas'}.get(row.get('stage'), '—'),
@@ -236,7 +242,10 @@ class SessionSummary:
             return
         self.selected = selection[0]
         row = self.rows[int(self.selected)]
-        self.note_title.set(f'{block_label(row)} · {collection_time(row)}')
+        identity = (
+            f"{row.get('group') or '—'} / {row.get('subject') or '—'} / {row.get('session') or '—'}"
+        )
+        self.note_title.set(f'{identity} · {block_label(row)} · {collection_time(row)}')
         signal = self.root / row['signal_path']
         self.data_folder.set(str(signal.parent))
         self.folder_button.configure(state='normal' if signal.parent.is_dir() else 'disabled')

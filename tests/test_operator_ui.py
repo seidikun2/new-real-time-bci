@@ -289,6 +289,9 @@ class PersistentOperatorTests(unittest.TestCase):
                     str(i) for i, row in enumerate(view.rows) if 'IM_treino' in row['block']
                 )
                 self.assertIn('62.5% ± 2.5%', view.table.item(first_id, 'values'))
+                self.assertEqual(view.table.set(first_id, 'group'), self.cfg.experiment.group)
+                self.assertEqual(view.table.set(first_id, 'subject'), self.cfg.experiment.subject_id)
+                self.assertEqual(view.table.set(first_id, 'session'), f'S{self.cfg.experiment.session_id}')
                 self.assertIn('Interrompido', view.table.item(second_id, 'values'))
                 view.table.selection_set(first_id)
                 view.select()
