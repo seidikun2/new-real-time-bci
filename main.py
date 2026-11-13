@@ -410,6 +410,17 @@ def protocol_blocks(cfg, full=False):
 
 
 def run_experiment(cfg, operator):
+    completed = _run_experiment_blocks(cfg, operator)
+    if not operator.closing:
+        message = (
+            'Protocolo finalizado. Os dados e relatórios estão salvos.'
+            if completed
+            else 'Sessão encerrada antes do fim do protocolo. Confira os blocos salvos abaixo.'
+        )
+        operator.finish(message)
+
+
+def _run_experiment_blocks(cfg, operator):
     blocks = protocol_blocks(cfg)
     operator.set_protocol([label for label, _, _ in blocks])
     model_ref = None
@@ -445,7 +456,7 @@ def run_experiment(cfg, operator):
             if action != 'next':
                 return
             break
-    operator.finish('Protocolo finalizado. Os dados e relatórios estão salvos.')
+    return True
 
 
 def run_simulation_check(cfg, output=None, stages=('single_target', 'two_legs')):
@@ -537,6 +548,8 @@ def main():
         if configured:
             if args.check_acquisition:
                 run_acquisition_check(cfg, operator, args.duration)
+                if not operator.closing:
+                    operator.finish('Teste de aquisição encerrado. Confira os dados salvos abaixo.')
             else:
                 run_experiment(cfg, operator)
     except Exception as exc:

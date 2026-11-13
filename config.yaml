@@ -29,7 +29,7 @@ experiment:
   session_id    : 1
   exp_name      : "TEST"
   session_type  : "IM_treino"   # o main altera conforme a fase
-  log_root      : "~/BCI_Dados"   # pasta externa; também pode ser escolhida na interface
+  log_root      : "~/Área de trabalho/BCI_Dados"   # /home/seidi/Área de trabalho/BCI_Dados nesta estação
 
 runtime:
   source           : eego        # null usa simulate_signal; simulator | hiamp | eego | lsl

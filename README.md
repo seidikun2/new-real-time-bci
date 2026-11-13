@@ -51,6 +51,20 @@ Em cada sessão:
    é possível escolher dados para retreinar ou abrir um modelo de outra pasta.
    Novos treinos não substituem o modelo ativo; **Trocar modelo** fica disponível
    ao revisar um bloco online.
+7. Ao terminar ou usar **Encerrar sessão**, a mesma janela mostra o **Resumo da
+   sessão**: horário, bloco, etapa, conclusão/interrupção, CV média ± desvio,
+   tamanho do sinal e comentários. Selecione uma linha para ver a pasta daquele
+   bloco e abrir seu relatório. A aba **Editar anotações** permite alterar o
+   comentário da linha selecionada. As alterações são salvas
+   automaticamente, inclusive ao trocar de linha ou fechar a janela. Olhos
+   abertos/fechados continua sem campo de anotação. Fechar pelo X encerra a janela.
+
+O resumo reúne os blocos daquele grupo, participante e sessão, incluindo registros
+anteriores se a aplicação foi reaberta. A CV é uma estimativa **dentro de cada
+bloco**, separada do modelo ativo no online. Registros sem treino não recebem uma
+acurácia inventada. A tela usa os resultados já salvos; não relê o EEG nem refaz o
+treino. Os botões **Abrir pasta**, **Pasta do bloco**, **Relatório completo** e
+**Abrir tabela CSV** dão acesso aos arquivos existentes.
 
 Não há sequência de pop-ups para confirmação, qualidade ou resultados. Janelas
 adicionais ficam reservadas a parâmetros e ao seletor de arquivo solicitado pelo
@@ -382,7 +396,8 @@ não comprova que o Unity recebeu/desenhou cada estímulo: confira sua conexão.
 ## Arquivos e manutenção
 
 A **Pasta dos dados** escolhida na preparação é a base de todos os arquivos da sessão.
-O padrão é `~/BCI_Dados`, na pasta pessoal, fora do projeto. A interface lembra a
+O padrão no `config.yaml` é `~/Área de trabalho/BCI_Dados` — nesta estação,
+`/home/seidi/Área de trabalho/BCI_Dados`, fora do projeto. A interface lembra a
 última pasta e a identificação selecionada; uma configuração explícita de outra
 pasta em `experiment.log_root` prevalece. Essa preferência fica na configuração
 do usuário do computador, separada do repositório e do cadastro dos participantes.
@@ -427,6 +442,13 @@ sozinho não prova uma interrupção. Os campos de análise da tabela existente
 adicionais) são preservados nas atualizações. `reason` continua reservado à
 curadoria; `comment` contém as anotações do experimentador/a.
 
+O índice inclui `cv_accuracy`, `cv_std`, `cv_balanced_accuracy`, `cv_trial_accuracy`,
+`cv_splits`, `cv_status` e `evaluation_error`, recuperados do `quality.json` do
+bloco. As acurácias são frações de 0 a 1 no CSV e porcentagens na interface.
+`sessions.csv` mantém o cadastro por sessão; `dataset_index.csv` guarda os resultados
+e comentários de cada bloco. O resumo final atualiza apenas os blocos da sessão
+selecionada e preserva os campos de curadoria dos demais registros.
+
 As anotações são salvas também no JSON do sinal, no `quality.json` e no relatório
 HTML, sem refazer treino ou figuras. As análises carregam o cadastro da sessão
 automaticamente. Para transportar os dados, copie a pasta inteira e selecione-a
@@ -436,6 +458,7 @@ o cadastro e os dados daquele laboratório começam na pasta externa escolhida l
 - `main.py`: fluxo das fases, escolha do modelo e supervisão dos componentes.
 - `analysis.py`: passo de treino, limite de CPU e tempos da análise entre blocos.
 - `operator.py`: janela de operação; `protocol.py`: sequência/tempos.
+- `session_summary.py`: tabela final, pastas e edição das anotações por bloco.
 - `catalog.py`: cadastro, índice e anotações; `theme.py`: cores da interface.
 - `signal_preview.py`: snapshot ao vivo e após o bloco; `storage.py`: destino dos dados.
 - `acquisition.py`: perfis, descoberta LSL, seleção de canais e unidades.
@@ -470,7 +493,7 @@ python -m unittest discover -s tests -v
 python tools/simulate_feedback_lsl.py
 python main.py --smoke
 # Apenas uma etapa, ou escolha outro destino externo:
-python main.py --smoke --stage two_legs --output ~/BCI_Dados/teste_pipeline
+python main.py --smoke --stage two_legs --output "$HOME/Área de trabalho/BCI_Dados/teste_pipeline"
 # Protocolo completo na interface, com tempos normais:
 python main.py --simulate
 # Recepção/gravação prolongada, com interface e equipamento selecionado na preparação:

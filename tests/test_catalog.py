@@ -16,6 +16,7 @@ from bci_core.catalog import (
     read_table,
     refresh_catalog,
     save_block_comment,
+    session_recordings,
     save_session,
     session_defaults,
     write_json,
@@ -246,6 +247,102 @@ class CatalogTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             save_block_comment(signal, 'Anotação', self.root)
         self.assertEqual(sidecar.read_text(), '{ json incompleto')
+
+    def test_session_summary_reads_saved_cv_without_retraining_and_preserves_curation(self):
+        signal = self.recording()
+        folder = signal.parent / '_qc' / '20261110_100000'
+        write_json(
+            folder / 'quality.json',
+            {
+                'evaluation': {
+                    'cv': {
+                        'status': 'ok',
+                        'acc_mean': 0.0,
+                        'acc_std': 0.1,
+                        'balanced_accuracy': 0.2,
+                        'trial_accuracy': 0.3,
+                        'splits': 5,
+                    }
+                }
+            },
+        )
+        row = index_recording(signal, self.root)
+        row.update(include='0', reason='Análise manual', bad_channels='C3')
+        write_table(self.root / 'dataset_index.csv', INDEX_FIELDS, [row])
+        original = signal.read_bytes()
+        with patch('bci_core.decoder_calibration.run_calibration') as train, patch(
+            'bci_core.data.read_signal_csv'
+        ) as read_eeg:
+            rows, warning = session_recordings(self.cfg)
+        train.assert_not_called()
+        read_eeg.assert_not_called()
+        self.assertEqual(warning, '')
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['cv_accuracy'], '0.0')
+        self.assertEqual(rows[0]['cv_splits'], '5')
+        self.assertEqual(rows[0]['include'], '0')
+        self.assertEqual(rows[0]['reason'], 'Análise manual')
+        self.assertEqual(rows[0]['bad_channels'], 'C3')
+        self.assertEqual(signal.read_bytes(), original)
+        self.assertEqual(
+            read_table(self.root / 'dataset_index.csv')[1][0]['cv_trial_accuracy'], '0.3'
+        )
+
+    def test_session_summary_recovers_unindexed_data_in_a_path_with_spaces_and_accents(self):
+        self.root = self.root / 'Área de trabalho' / 'BCI_Dados'
+        self.cfg.experiment.log_root = str(self.root)
+        signal = self.recording()
+        rows, warning = session_recordings(self.cfg)
+        self.assertEqual(warning, '')
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(self.root / rows[0]['signal_path'], signal)
+        self.assertTrue((self.root / 'dataset_index.csv').is_file())
+
+    def test_session_summary_keeps_other_groups_and_sessions_out_of_the_view(self):
+        signal = self.recording()
+        index_recording(signal, self.root)
+        other = self.root / 'LM' / signal.relative_to(self.root / 'CTRL')
+        other.parent.mkdir(parents=True)
+        shutil.copy(signal, other)
+        shutil.copy(
+            signal.with_name(signal.name.replace('_signal_', '_markers_')),
+            other.with_name(other.name.replace('_signal_', '_markers_')),
+        )
+        metadata = read_json(signal.with_suffix('.json'))
+        metadata['config']['experiment']['group'] = 'LM'
+        write_json(other.with_suffix('.json'), metadata)
+        index_recording(other, self.root)
+        rows, _ = session_recordings(self.cfg)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['group'], 'CTRL')
+        self.assertEqual(len(read_table(self.root / 'dataset_index.csv')[1]), 2)
+
+    def test_partial_training_error_clears_old_cv_and_resting_has_no_score(self):
+        signal = self.recording(complete=False)
+        folder = signal.parent / '_qc' / '20261110_100000'
+        write_json(
+            folder / 'quality.json', {'evaluation': {'cv': {'status': 'ok', 'acc_mean': 0.8}}}
+        )
+        index_recording(signal, self.root)
+        write_json(
+            folder / 'quality.json', {'evaluation': {'error': 'Bloco incompleto; não treinado.'}}
+        )
+        rows, _ = session_recordings(self.cfg)
+        self.assertEqual(rows[0]['cv_accuracy'], '')
+        self.assertEqual(rows[0]['cv_status'], 'error')
+        self.assertEqual(rows[0]['status'], 'partial')
+        resting = self.recording('Repouso_olhos')
+        metadata = read_json(resting.with_suffix('.json'))
+        metadata['mode'] = 'resting'
+        write_json(resting.with_suffix('.json'), metadata)
+        write_json(
+            resting.parent / '_qc' / '20261110_100000' / 'quality.json',
+            {'evaluation': {'not_applicable': True, 'cv': None}},
+        )
+        rows, _ = session_recordings(self.cfg)
+        rest = next(row for row in rows if row['block'].startswith('Repouso_olhos'))
+        self.assertEqual(rest['cv_status'], 'not_applicable')
+        self.assertEqual(rest['cv_accuracy'], '')
 
     def test_online_index_links_the_selected_training_recording(self):
         training = self.recording('IM_treino')

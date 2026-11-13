@@ -204,6 +204,24 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual([call.args[1] for call in run.call_args_list], ['resting', 'train', 'train', 'online', 'online'])
         self.assertEqual([call.args[2] for call in run.call_args_list], [None, None, None, '/chosen/model', '/chosen/model'])
 
+    def test_stopping_before_the_last_block_still_opens_the_session_summary(self):
+        from main import run_experiment
+        from unittest.mock import Mock
+
+        operator = Mock()
+        operator.closing = False
+        operator.prepare_block.return_value = True
+        operator.review_block.return_value = 'stop'
+        operator.run_job.side_effect = lambda title, function, *args, **kwargs: function(*args)
+        block = {'complete': True, 'markers_file': 'm', 'signal_file': 's'}
+        with patch('main.run_block', return_value=block) as collect, patch(
+            'main.analyze_block', return_value=({}, {})
+        ):
+            run_experiment(self.cfg, operator)
+        self.assertEqual(collect.call_count, 1)
+        operator.finish.assert_called_once()
+        self.assertIn('antes do fim', operator.finish.call_args.args[0])
+
     def test_acquisition_failure_is_incomplete_and_preserves_diagnostics(self):
         from main import run_block
         with tempfile.TemporaryDirectory() as folder:

@@ -246,6 +246,120 @@ class PersistentOperatorTests(unittest.TestCase):
         self.assertLessEqual(self.op.buttons.winfo_y()+self.op.buttons.winfo_height(), self.op.root.winfo_height())
         self.assert_one_window()
 
+    def summary_recording(self, block, complete=True, evaluation=None):
+        import copy
+        from bci_core.receive_data_log import BlockRecorder
+        from bci_core.catalog import write_json
+
+        cfg = copy.deepcopy(self.cfg)
+        cfg.experiment.session_type = block
+        recorder = BlockRecorder(cfg, 'resting' if block == 'Repouso_olhos' else 'train')
+        recorder.close()
+        recorder.signal_path.write_text('lsl_time_s,C3,C4\n1,2,3\n1.01,4,5\n')
+        metadata = recorder.metadata
+        metadata.update(complete=complete, reason='completed' if complete else 'Parada manual')
+        recorder.save_metadata(metadata)
+        folder = recorder.signal_path.parent / '_qc' / recorder.run_id
+        write_json(folder / 'quality.json', {'evaluation': evaluation or {}})
+        return recorder.signal_path
+
+    def test_final_summary_edits_the_correct_block_and_reloads_saved_comments(self):
+        from bci_core.catalog import read_json, read_table
+
+        self.op.cfg = self.cfg
+        first = self.summary_recording(
+            'EM_treino',
+            evaluation={'cv': {'status': 'ok', 'acc_mean': 0.625, 'acc_std': 0.025, 'splits': 5}},
+        )
+        second = self.summary_recording(
+            'IM_treino', complete=False, evaluation={'error': 'Bloco interrompido.'}
+        )
+        failures = []
+        note = 'Movimento breve da touca.\nParticipante ajustou a postura.'
+
+        def inspect():
+            try:
+                view = self.op.summary
+                self.assertEqual(len(view.rows), 2)
+                self.assertEqual(view.session_entry.get(), str(view.session_folder))
+                first_id = next(
+                    str(i) for i, row in enumerate(view.rows) if 'EM_treino' in row['block']
+                )
+                second_id = next(
+                    str(i) for i, row in enumerate(view.rows) if 'IM_treino' in row['block']
+                )
+                self.assertIn('62.5% ± 2.5%', view.table.item(first_id, 'values'))
+                self.assertIn('Interrompido', view.table.item(second_id, 'values'))
+                view.table.selection_set(first_id)
+                view.select()
+                view.comment.insert('1.0', note)
+                view.table.selection_set(second_id)
+                view.select()  # Mudar a linha salva a anotação da linha anterior.
+                self.assertEqual(read_json(first.with_suffix('.json'))['comment'], note)
+                self.assertNotIn('comment', read_json(second.with_suffix('.json')))
+                self.assertEqual(view.data_folder.get(), str(second.parent))
+                self.assert_one_window()
+            except Exception as exc:
+                failures.append(exc)
+            finally:
+                self.op.action.set('stop')
+
+        self.op.root.after(100, inspect)
+        self.op.finish('Protocolo finalizado.')
+        self.assertEqual(failures, [])
+        rows = read_table(Path(self.output.name) / 'dataset_index.csv')[1]
+        self.assertEqual(next(row for row in rows if 'EM_treino' in row['block'])['comment'], note)
+        captured = []
+
+        def reopen():
+            captured.extend(
+                row['comment'] for row in self.op.summary.rows if 'EM_treino' in row['block']
+            )
+            self.op.action.set('stop')
+
+        self.op.root.after(100, reopen)
+        self.op.finish('Sessão reaberta para revisão.')
+        self.assertEqual(captured, [note])
+
+    def test_final_summary_leaves_eyes_notes_disabled_and_fits_a_smaller_window(self):
+        self.op.cfg = self.cfg
+        for _ in range(6):
+            self.summary_recording('Repouso_olhos', evaluation={'not_applicable': True})
+        failures = []
+        self.op.root.geometry('960x660')
+
+        def inspect():
+            try:
+                view = self.op.summary
+                self.assertEqual(str(view.comment.cget('state')), 'disabled')
+                self.assertIn('Não se aplica', view.table.item('0', 'values'))
+                self.assertGreater(view.table.winfo_height(), 80)
+                self.assertTrue(view.table.bbox(view.selected))
+                self.assertLessEqual(
+                    view.folder_button.winfo_rooty() + view.folder_button.winfo_height(),
+                    self.op.root.winfo_rooty() + self.op.root.winfo_height(),
+                )
+                view.tabs.select(1)
+                self.op.root.update_idletasks()
+                self.assertGreater(view.comment.winfo_height(), 80)
+                self.assertLessEqual(
+                    view.comment.winfo_rooty() + view.comment.winfo_height(),
+                    self.op.root.winfo_rooty() + self.op.root.winfo_height(),
+                )
+                self.assertLessEqual(
+                    self.op.buttons.winfo_y() + self.op.buttons.winfo_height(),
+                    self.op.root.winfo_height(),
+                )
+                self.assert_one_window()
+            except Exception as exc:
+                failures.append(exc)
+            finally:
+                self.op.action.set('stop')
+
+        self.op.root.after(100, inspect)
+        self.op.finish('Registro de repouso encerrado.')
+        self.assertEqual(failures, [])
+
     def test_analysis_stage_and_elapsed_time_update_while_the_worker_runs(self):
         seen = []
 

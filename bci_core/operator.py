@@ -131,13 +131,18 @@ class Operator:
         self.parameters = ttk.Button(header, text='Parâmetros', command=self.configure_parameters)
         self.parameters.pack(side='right')
         self.steps = tk.StringVar()
-        ttk.Label(self.shell, textvariable=self.steps, style='Muted.TLabel', wraplength=970).pack(anchor='w', pady=(14, 10))
+        self.steps_label = ttk.Label(
+            self.shell, textvariable=self.steps, style='Muted.TLabel', wraplength=970
+        )
+        self.steps_label.pack(anchor='w', pady=(14, 10))
         self.title = tk.StringVar()
-        ttk.Label(self.shell, textvariable=self.title, style='Title.TLabel').pack(anchor='w')
+        self.title_label = ttk.Label(self.shell, textvariable=self.title, style='Title.TLabel')
+        self.title_label.pack(anchor='w')
         self.subtitle = tk.StringVar()
         ttk.Label(self.shell, textvariable=self.subtitle, style='Muted.TLabel', wraplength=970).pack(anchor='w', pady=(6, 12))
         self.note = tk.StringVar()
-        ttk.Label(self.shell, textvariable=self.note, wraplength=970).pack(anchor='w', pady=(0, 10))
+        self.note_label = ttk.Label(self.shell, textvariable=self.note, wraplength=970)
+        self.note_label.pack(anchor='w', pady=(0, 10))
         self.report_link = ttk.Button(self.shell, text='Abrir relatório completo', style='Link.TButton', cursor='hand2', command=self.open_report)
         self.signal_preview = None
         self.timing_preview = None
@@ -153,10 +158,13 @@ class Operator:
         self.live_inlet = None
         self.comment_widget = None
         self.comment_after = None
+        self.summary = None
         self.root.protocol('WM_DELETE_WINDOW', self.request_close)
 
     def request_close(self):
         self.flush_comment()
+        if self.summary is not None:
+            self.summary.flush()
         if getattr(self, '_registration_dirty', False):
             self.save_registration()
         self.closing = self.cancelled = True
@@ -164,9 +172,15 @@ class Operator:
         self.action.set('stop')
 
     def page(self, title, subtitle=''):
+        if self.summary is not None:
+            self.summary.flush()
+            self.summary = None
         self.comment_widget = None
         self.title.set(title)
         self.subtitle.set(subtitle)
+        self.parameters.pack(side='right')
+        self.steps_label.pack(anchor='w', pady=(14, 10), before=self.title_label)
+        self.note_label.pack(anchor='w', pady=(0, 10), before=self.body)
         for container in (self.body, self.buttons):
             for widget in container.winfo_children():
                 widget.destroy()
@@ -954,13 +968,32 @@ class Operator:
         return self.filedialog.askopenfilename(title=title, initialdir=initialdir, filetypes=[('Modelo BCI', 'model_meta.json')], parent=self.root)
 
     def finish(self, text):
-        self.page('Sessão encerrada', text)
+        self.flush_comment()
+        self.page('Resumo da sessão', text)
+        self.parameters.pack_forget()
+        self.steps_label.pack_forget()
+        if not self.note.get():
+            self.note_label.pack_forget()
+        self.set_report(None, '')
+        if self.cfg is not None:
+            from .session_summary import SessionSummary
+
+            try:
+                self.summary = SessionSummary(self.body, self.cfg)
+            except (OSError, ValueError, csv.Error) as exc:
+                self.notify(
+                    f'Os dados estão preservados. Não foi possível carregar a tabela: {exc}'
+                )
         self.button('Fechar', 'stop', True)
         self.wait_action()
+        if self.summary is not None:
+            self.summary.flush()
 
     def close(self):
         try:
             self.flush_comment()
+            if self.summary is not None:
+                self.summary.flush()
             if getattr(self, '_registration_dirty', False):
                 self.save_registration()
             self.root.destroy()

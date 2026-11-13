@@ -9,7 +9,14 @@ from datetime import date, datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from .storage import GROUPS, canonical_block, external_path, feedback_condition, session_path
+from .storage import (
+    GROUPS,
+    canonical_block,
+    external_path,
+    feedback_condition,
+    session_path,
+    session_roots,
+)
 
 SESSION_FIELDS = [
     'group',
@@ -59,6 +66,13 @@ INDEX_FIELDS = [
     'started_at',
     'ended_at',
     'report_path',
+    'cv_status',
+    'cv_accuracy',
+    'cv_std',
+    'cv_balanced_accuracy',
+    'cv_trial_accuracy',
+    'cv_splits',
+    'evaluation_error',
 ]
 LOCK = threading.RLock()
 
@@ -411,7 +425,76 @@ def recording_row(signal, root, previous, sessions):
     row['collection_date'] = row.get('collection_date') or (
         f'{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]}' if stamp else ''
     )
+    evaluation = read_json(report.with_name('quality.json')).get('evaluation')
+    if not isinstance(evaluation, dict):
+        evaluation = {}
+    if evaluation or mode == 'resting':
+        cv = evaluation.get('cv', {})
+        if not isinstance(cv, dict):
+            cv = {}
+        if mode == 'resting' or evaluation.get('not_applicable'):
+            status = 'not_applicable'
+        else:
+            status = cv.get('status') or ('error' if evaluation.get('error') else 'not_evaluated')
+        row.update(
+            cv_status=status, evaluation_error=evaluation.get('error') or cv.get('reason', '')
+        )
+        for column, key in [
+            ('cv_accuracy', 'acc_mean'),
+            ('cv_std', 'acc_std'),
+            ('cv_balanced_accuracy', 'balanced_accuracy'),
+            ('cv_trial_accuracy', 'trial_accuracy'),
+            ('cv_splits', 'splits'),
+        ]:
+            row[column] = str(cv[key]) if cv.get(key) is not None else ''
     return row
+
+
+def session_recordings(cfg):
+    """Atualiza só os blocos desta sessão, sem ler EEG nem refazer análises."""
+    exp = cfg.experiment
+    root = external_path(exp.log_root)
+    selected_session = session_id(exp.session_id)
+
+    def belongs(row):
+        return (
+            row.get('subject') == exp.subject_id
+            and row.get('session') == selected_session
+            and row.get('group') in {exp.group, '', 'UNASSIGNED'}
+        )
+
+    with LOCK:
+        fields, rows = read_table(root / 'dataset_index.csv')
+        previous = {r.get('signal_path', '').replace('\\', '/'): r for r in rows}
+        paths = {root / key for key, row in previous.items() if key and belongs(row)}
+        for folder in session_roots(cfg):
+            paths.update(
+                p
+                for p in folder.rglob('*_signal_*.csv')
+                if not {'_qc', '_model'}.intersection(p.parts)
+            )
+        sessions = read_sessions(root)
+        current = []
+        for signal in sorted(paths):
+            if not signal.resolve().is_relative_to(root):
+                continue
+            key = relative_path(signal, root)
+            row = recording_row(signal, root, previous.get(key, {}), sessions)
+            if belongs(row):
+                current.append(row)
+                previous[key] = row
+        warning = ''
+        if current:
+            try:
+                write_table(
+                    root / 'dataset_index.csv', [*fields, *INDEX_FIELDS], list(previous.values())
+                )
+            except (OSError, csv.Error) as exc:
+                warning = f'Resumo carregado; atualização da tabela pendente: {exc}'
+    return (
+        sorted(current, key=lambda row: (row.get('stamp', ''), row.get('signal_path', ''))),
+        warning,
+    )
 
 
 def index_recording(signal, data_root=None):
