@@ -84,12 +84,12 @@ class RealtimeTests(unittest.TestCase):
                     classes_map={'LEFT_MI_STIM': 0, 'REST_STIM': 1})
         stop = threading.Event()
         monitor = RealtimeMonitor()
-        origin = local_clock()
         count = 0
         def pull(**kwargs):
             nonlocal count
             stop.wait(.01)
-            stamp = origin+count/100
+            # O dado simulado acaba de chegar; pausas da máquina não o tornam antigo.
+            stamp = local_clock()
             count += 1
             return [[np.sin(count), np.cos(count)]], [stamp]
         inlet = Mock()

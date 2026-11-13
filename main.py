@@ -12,6 +12,8 @@ from pathlib import Path
 from queue import Queue, Empty
 
 import matplotlib
+import numpy as np
+
 matplotlib.use('Agg')  # Relatórios são gerados em background, sem janelas Matplotlib.
 
 from bci_core.config_models import load_config
@@ -24,7 +26,9 @@ from bci_core.online_inference import run_realtime_decoder, read_model_meta, loa
 from bci_core.intention_control import run_intention_controller
 from bci_core.decoder_calibration import run_calibration
 from bci_core.check_data import run_check_data
-from bci_core.data import find_marker_signal_pairs
+from bci_core.data import find_marker_signal_pairs, read_signal_csv, read_markers_csv
+from bci_core.analysis import AnalysisTimer, analysis_options
+from threadpoolctl import threadpool_limits
 from bci_core.storage import external_path, prepare_data_root, session_roots, canonical_block
 from bci_core.catalog import index_recording
 from bci_core.realtime import RealtimeMonitor
@@ -100,7 +104,13 @@ def choose_model(cfg, operator):
                 pair = operator.choose('Dados para retreinar', [(Path(s).name, (m, s)) for m, s in pairs])
                 if pair is None:
                     continue
-                result = operator.run_job('Treinando os dados escolhidos', run_calibration, cfg, *pair)
+                result = operator.run_job(
+                    'Treinando os dados escolhidos',
+                    run_calibration,
+                    cfg,
+                    *pair,
+                    report_progress=True,
+                )
                 reference = result['model_dir']
             validate_model(cfg, reference, check_rate=False)
             selected_meta = read_model_meta(reference)
@@ -298,33 +308,83 @@ def run_block(cfg, mode='train', model_ref=None, block_index=0, operator=None, a
             'signal_file': str(recorder.signal_path.resolve())}
 
 
-def analyze_block(cfg, block, operator=None):
-    """Análise automática e não bloqueante para a condução; nenhum popup."""
+def analyze_block(cfg, block, operator=None, progress=None):
+    """Lê o bloco uma vez, analisa com CPU limitada e registra cada etapa."""
     cfg = recording_config(cfg, block['signal_file'])
     pair = (block['markers_file'], block['signal_file'])
-    if block.get('mode') == 'resting' or getattr(cfg, '_block_mode', None) == 'resting':
-        evaluation = {'not_applicable': True,
-                      'note': 'Registro de olhos abertos e fechados para inspeção do EEG, sem treino de imagética motora.'}
-        if not block['complete']:
-            evaluation['error'] = f"Registro incompleto. {block['reason']}"
-    elif cfg._raw_config.get('protocol', {}).get('acquisition_test_s'):
-        evaluation = {'error': 'Teste de aquisição: sem tentativas de classificação; treino não executado.'}
-    elif block['complete']:
-        try:
-            evaluation = run_calibration(cfg, *pair)['meta']
-        except Exception as exc:
-            evaluation = {'error': str(exc)}
-    else:
-        evaluation = {'error': f"Bloco incompleto; não usado no treino. {block['reason']}"}
-    threshold = cfg.protocol.min_cv_accuracy
-    accuracy = evaluation.get('cv', {}).get('acc_mean')
-    if not evaluation.get('not_applicable') and threshold is not None and (accuracy is None or accuracy < threshold):
-        evaluation.setdefault('warnings', []).append(f'Acurácia abaixo do critério {threshold}: {accuracy}.')
-    qc = run_check_data(cfg, markers_file=pair[0], signal_file=pair[1], evaluation=evaluation)
+    signal = external_path(pair[1])
+    folder = signal.parent / '_qc' / signal.stem.rsplit('_signal_', 1)[-1]
+    cfg._analysis_timing_file = str(folder / 'analysis_timing.json')
+    timer = AnalysisTimer(cfg._analysis_timing_file, progress)
+    options = analysis_options(cfg)
+    evaluation, qc, recording = {}, {}, None
+    status = 'error'
     try:
-        index_recording(pair[1], cfg.experiment.log_root)
-    except Exception as exc:
-        print(f'[cadastro] Relatório preservado; tabela pendente: {exc}')
+        with threadpool_limits(limits=options['blas_threads']):
+            timer('Lendo EEG e marcadores · uma leitura para treino e checks')
+            samples = (
+                read_signal_csv(pair[1])
+                if signal.exists()
+                else (np.array([]), np.empty((0, 0)), [])
+            )
+            recording = (*samples, *read_markers_csv(pair[0], cfg.codes.code_map))
+            if block.get('mode') == 'resting' or getattr(cfg, '_block_mode', None) == 'resting':
+                evaluation = {
+                    'not_applicable': True,
+                    'note': 'Registro de olhos abertos e fechados para inspeção do EEG, sem treino de imagética motora.',
+                }
+                if not block['complete']:
+                    evaluation['error'] = f"Registro incompleto. {block['reason']}"
+            elif cfg._raw_config.get('protocol', {}).get('acquisition_test_s'):
+                evaluation = {
+                    'error': 'Teste de aquisição: sem tentativas de classificação; treino não executado.'
+                }
+            elif block['complete']:
+                try:
+                    evaluation = run_calibration(cfg, *pair, recording=recording, progress=timer)[
+                        'meta'
+                    ]
+                except Exception as exc:
+                    evaluation = {'error': str(exc)}
+            else:
+                evaluation = {'error': f"Bloco incompleto; não usado no treino. {block['reason']}"}
+            threshold = cfg.protocol.min_cv_accuracy
+            accuracy = evaluation.get('cv', {}).get('acc_mean')
+            if (
+                not evaluation.get('not_applicable')
+                and threshold is not None
+                and (accuracy is None or accuracy < threshold)
+            ):
+                evaluation.setdefault('warnings', []).append(
+                    f'Acurácia abaixo do critério {threshold}: {accuracy}.'
+                )
+            qc = run_check_data(
+                cfg,
+                markers_file=pair[0],
+                signal_file=pair[1],
+                evaluation=evaluation,
+                recording=recording,
+                progress=timer,
+            )
+            timer('Atualizando o catálogo dos dados')
+            try:
+                index_recording(pair[1], cfg.experiment.log_root)
+            except Exception as exc:
+                print(f'[cadastro] Relatório preservado; tabela pendente: {exc}')
+            status = 'completed_with_training_error' if evaluation.get('error') else 'completed'
+    finally:
+        qc['analysis_timing'] = timer.finish(
+            status,
+            **options,
+            fs_hz=cfg.fs_hz,
+            channels=len(recording[2]) if recording else None,
+            samples=len(recording[0]) if recording else None,
+            windows=evaluation.get('training_windows'),
+            effective_training_step_s=evaluation.get('training_step_s'),
+            online_step_s=cfg.step_s,
+            cv_splits=evaluation.get('cv', {}).get('splits'),
+            training_error=evaluation.get('error'),
+        )
     return qc, evaluation
 
 
@@ -365,7 +425,9 @@ def run_experiment(cfg, operator):
                 return
             block = run_block(block_cfg, mode, model_ref if mode == 'online' else None, index, operator)
             try:
-                qc, evaluation = operator.run_job('Analisando o bloco', analyze_block, block_cfg, block)
+                qc, evaluation = operator.run_job(
+                    'Analisando o bloco', analyze_block, block_cfg, block, report_progress=True
+                )
             except Exception as exc:
                 qc, evaluation = {'issues': [str(exc)]}, {'error': f'Análise indisponível. CSV preservado: {block["signal_file"]}'}
             if operator.closing:
@@ -432,7 +494,9 @@ def run_acquisition_check(cfg, operator, duration):
     operator.set_protocol([label])
     while not operator.closing and operator.prepare_block(cfg, label):
         block = run_block(cfg, mode='diagnostic', operator=operator, acquisition_duration=duration)
-        qc, evaluation = operator.run_job('Verificando a aquisição', analyze_block, cfg, block)
+        qc, evaluation = operator.run_job(
+            'Verificando a aquisição', analyze_block, cfg, block, report_progress=True
+        )
         if operator.review_block(label, block, qc, evaluation) != 'repeat':
             return
 

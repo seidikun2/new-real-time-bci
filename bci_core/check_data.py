@@ -15,12 +15,13 @@ from .config_models import expected_signal_channels
 from .acquisition import source_name, recording_config
 from .report import collection_info, write_report
 from .storage import external_path
-from .signal_preview import signal_snapshot
+from .signal_preview import signal_snapshot, display_envelope
 from .data import read_signal_csv, read_markers_csv, timestamp_integrity
 from .resting_state import inspect_resting
 
 
-def inspect_quality(times, X, names, marker_times, labels, cfg):
+def inspect_quality(times, X, names, marker_times, labels, cfg, progress=None):
+    progress = progress or (lambda _: None)
     q = cfg._raw_config.get('quality', {})
     issues = []
     observations = list(getattr(cfg, '_stream_observations', []))
@@ -112,12 +113,14 @@ def inspect_quality(times, X, names, marker_times, labels, cfg):
         finite_times = times[np.isfinite(times)]
         if len(finite_times) and any(t < finite_times[0] or t + cfg.trial_duration_s > finite_times[-1] + 1/fs for t in attempts):
             issues.append('Tentativa fora da cobertura EEG: início/fim truncado.')
-    clean = np.nan_to_num(X, nan=0., posinf=0., neginf=0.)
-    frequencies, psd = signal.welch(clean, fs=fs, nperseg=min(len(clean), max(8, round(fs*2))), axis=0)
+    progress('Qualidade · espectro de todos os canais')
+    clean = X if np.isfinite(X).all() else np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+    frequencies, psd = channel_spectra(clean, fs)
     power = np.maximum(psd.sum(axis=0), np.finfo(float).tiny)
     line_mask = (abs(frequencies-50) <= 2) | (abs(frequencies-60) <= 2)
     line_ratio = psd[line_mask].sum(axis=0) / power
     high_ratio = psd[frequencies >= 40].sum(axis=0) / power
+    progress('Qualidade · amplitude, artefatos e canais planos')
     med = np.median(clean, axis=0)
     robust_scale = 1.4826 * np.median(abs(clean-med), axis=0)
     win = max(2, round(fs))
@@ -155,16 +158,32 @@ def inspect_quality(times, X, names, marker_times, labels, cfg):
         flat_fraction = float(np.mean(np.diff(clean[:, i]) == 0))
         if flat_fraction > .1:
             reasons.append('patamares/repetição de amostras')
-        rows.append(dict(channel=name, std=std, peak_to_peak=span,
-                         invalid_samples=invalid, bad_window_fraction=bad_fraction,
-                         line_noise_ratio=float(line_ratio[i]), high_frequency_ratio=float(high_ratio[i]),
-                         repeated_fraction=flat_fraction, reasons=reasons))
+        rows.append(
+            dict(
+                channel=name,
+                std=std,
+                peak_to_peak=span,
+                median=float(med[i]),
+                robust_scale=float(robust_scale[i]),
+                invalid_samples=invalid,
+                bad_window_fraction=bad_fraction,
+                line_noise_ratio=float(line_ratio[i]),
+                high_frequency_ratio=float(high_ratio[i]),
+                repeated_fraction=flat_fraction,
+                reasons=reasons,
+            )
+        )
     noisy = [row['channel'] for row in rows if row['reasons']]
     if noisy:
         issues.append('Inspecione os canais: ' + ', '.join(noisy))
+    progress('Qualidade · canais idênticos')
+    probe = clean[:: max(1, len(clean) // 128)]
     for i in range(len(names)):
         for j in range(i):
-            if np.array_equal(clean[:, i], clean[:, j]):
+            # A prévia só descarta pares diferentes; a confirmação usa todo o sinal.
+            if np.array_equal(probe[:, i], probe[:, j]) and np.array_equal(
+                clean[:, i], clean[:, j]
+            ):
                 issues.append(f'Canais idênticos: {names[j]} e {names[i]}.')
     report = dict(status='attention' if issues else 'ok', issues=list(dict.fromkeys(issues)),
                   timestamp_integrity=timing,
@@ -179,15 +198,43 @@ def inspect_quality(times, X, names, marker_times, labels, cfg):
     return report, clean, frequencies, psd, bad
 
 
-def run_check_data(cfg, mode='train', markers_file=None, signal_file=None, save_png=True, evaluation=None):
+def channel_spectra(values, fs):
+    """Welch em lotes pequenos: mesmas amostras, menor pico de memória."""
+    spectra = []
+    for first in range(0, values.shape[1], 8):
+        frequencies, power = signal.welch(
+            values[:, first : first + 8],
+            fs=fs,
+            nperseg=min(len(values), max(8, round(fs * 2))),
+            axis=0,
+        )
+        spectra.append(power)
+    return frequencies, np.concatenate(spectra, axis=1)
+
+
+def run_check_data(
+    cfg,
+    mode='train',
+    markers_file=None,
+    signal_file=None,
+    save_png=True,
+    evaluation=None,
+    recording=None,
+    progress=None,
+):
+    progress = progress or (lambda _: None)
     cfg = recording_config(cfg, signal_file) if signal_file else cfg
     if markers_file is None or signal_file is None:
         raise ValueError('Selecione explicitamente os CSVs do bloco.')
-    if Path(signal_file).exists():
-        times, X, names = read_signal_csv(signal_file)
-    else:
-        times, X, names = np.array([]), np.empty((0, 0)), []
-    tm, labels = read_markers_csv(markers_file, cfg.codes.code_map)
+    if recording is None:
+        progress('Lendo EEG e marcadores para os checks')
+        samples = (
+            read_signal_csv(signal_file)
+            if Path(signal_file).exists()
+            else (np.array([]), np.empty((0, 0)), [])
+        )
+        recording = (*samples, *read_markers_csv(markers_file, cfg.codes.code_map))
+    times, X, names, tm, labels = recording
     folder = external_path(signal_file).parent / '_qc' / Path(signal_file).stem.rsplit('_signal_', 1)[-1]
     folder = external_path(folder)
     folder.mkdir(parents=True, exist_ok=True)
@@ -207,11 +254,12 @@ def run_check_data(cfg, mode='train', markers_file=None, signal_file=None, save_
             'source': source_name(cfg),
             'thresholds': cfg._raw_config.get('quality', {}),
             'unit': 'uV',
+            'analysis_timing_file': getattr(cfg, '_analysis_timing_file', None),
         }
         (folder / 'quality.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
         path = write_report(cfg, report, evaluation, signal_file, folder)
         return {'report_path': str(path.resolve()), **report}
-    report, clean, freq, psd, bad = inspect_quality(times, X, names, tm, labels, cfg)
+    report, clean, freq, psd, bad = inspect_quality(times, X, names, tm, labels, cfg, progress)
     report['evaluation'] = evaluation
     report['issues'].extend((evaluation or {}).get('warnings', []))
     report['issues'] = list(dict.fromkeys(report['issues']))
@@ -220,22 +268,26 @@ def run_check_data(cfg, mode='train', markers_file=None, signal_file=None, save_
     report['collection'] = collection
     report['participant'] = collection.get('participant', {})
     report['comment'] = collection.get('comment', '')
+    report['analysis_timing_file'] = getattr(cfg, '_analysis_timing_file', None)
+    progress('Gerando o snapshot e as métricas do bloco')
     snapshot = signal_snapshot(times, X, names)
     if snapshot is not None:
         snapshot_file = folder / 'signal_snapshot.npz'
         np.savez_compressed(snapshot_file, **snapshot)
         report['snapshot_file'] = str(snapshot_file.resolve())
     (folder / 'quality.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+    progress('Gerando as figuras de sinal, espectro e artefatos')
     plt.rcParams.update({'font.size': 9})
     fig, axes = plt.subplots(3, 1, figsize=(13, max(12, len(names)*.34)), layout='constrained')
     origin = times[np.isfinite(times)][0] if np.isfinite(times).any() else 0.
-    step = max(1, len(times) // 15000)
-    scales = np.maximum(1.4826 * np.median(abs(clean-np.median(clean, axis=0)), axis=0), 1e-9)
-    normalized = np.clip((clean-np.median(clean, axis=0))/scales, -6, 6)
+    center = np.array([row['median'] for row in report['channels']])
+    scales = np.maximum([row['robust_scale'] for row in report['channels']], 1e-9)
+    display_times, display_values = display_envelope(times, clean, points=3000)
+    normalized = np.clip((display_values - center) / scales, -6, 6)
     for i, name in enumerate(names):
-        axes[0].plot(times[::step]-origin, normalized[::step, i]+i*10, lw=.4, color='#334155')
+        axes[0].plot(display_times - origin, normalized[:, i] + i * 10, lw=0.4, color='#334155')
     axes[0].set_yticks(np.arange(len(names))*10, names)
-    axes[0].set_title('EEG bruto: escala robusta por canal, picos recortados em ±6 para facilitar leitura')
+    axes[0].set_title('EEG bruto: envelope mínimo/máximo, escala robusta por canal, picos recortados em ±6')
     if report.get('resting_state') is not None:
         for condition, color in zip(report['resting_state'], ['#b9d9f0', '#d9dee6']):
             if condition['start_lsl_s'] is not None and condition['end_lsl_s'] is not None:
@@ -265,6 +317,7 @@ def run_check_data(cfg, mode='train', markers_file=None, signal_file=None, save_
     plt.close(fig)
     import pandas as pd
     pd.DataFrame(report['channels']).to_csv(folder / 'channels.csv', index=False)
+    progress('Montando o relatório, PCA e matriz de confusão')
     path = write_report(cfg, report, evaluation, signal_file, folder)
     print(f'[qualidade] {report["status"]}: {path}')
     return {'report_path': str(path.resolve()), **report}

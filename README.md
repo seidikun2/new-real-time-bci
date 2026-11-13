@@ -37,7 +37,9 @@ Em cada sessão:
    a cada segundo. Os canais têm a mesma cor e nomes no eixo vertical; use a rolagem
    para inspecionar todos os canais. No online, o ponto PCA do experimentador fica
    em outra aba. **Interromper e salvar** encerra o bloco preservando os dados.
-5. Ao terminar, a análise e o treino são feitos em background. O resultado, o mapa
+5. Ao terminar, a análise e o treino são feitos em background. A tela mostra a
+   etapa atual (leitura, divisão da validação, modelo, PCA ou checks) e o tempo
+   decorrido. O resultado, o mapa
    PCA, a matriz de confusão e o snapshot aparecem em abas maiores, sem abrir
    navegador nem pedir confirmação de cada check. Escolha **Próximo bloco**, **Repetir bloco** ou
    **Encerrar sessão**. O link **Abrir relatório completo** fica visível entre blocos,
@@ -143,6 +145,35 @@ dessas probabilidades. Dados com artefatos podem produzir acurácias enganosas.
 O modelo selecionado antes do online permanece fixo durante os blocos. Os modelos
 novos ficam salvos separadamente; retreinar nunca sobrescreve um modelo anterior.
 Modelos antigos que classificavam no PCA devem ser **retreinados a partir dos CSVs**.
+
+Para reduzir a espera entre blocos, o treino usa por padrão um passo de **250 ms**
+entre janelas de 1 s. A inferência online continua com passo de **50 ms**. Todas
+as tentativas válidas e todos os canais selecionados participam do treino; há menos
+janelas quase iguais sobrepostas. Essa escolha pode alterar as estimativas de
+acurácia e o modelo ajustado; não remove amostras dos arquivos ou dos checks.
+`analysis.training_step_s: null` restaura o passo de `step_s` também no treino.
+Nos testes com janelas menores, o passo de treino é limitado à duração da janela.
+O modelo registra `training_step_s` separadamente de `step_s`, que continua sendo
+o passo usado pelo decoder. O relatório informa a duração, o passo e a quantidade
+de janelas realmente utilizadas.
+
+A análise lê cada CSV uma única vez e calcula as covariâncias OAS uma vez por
+janela. OAS não aprende parâmetros entre tentativas, então esse resultado pode
+ser reutilizado; a referência Riemanniana e o SVM continuam sendo ajustados apenas
+nas tentativas de treino de cada divisão da CV. As cinco divisões, a classificação
+no espaço completo, o mapa PCA e a matriz de confusão são mantidos.
+`analysis.blas_threads: 1` limita a disputa de CPU durante os cálculos. Os checks
+examinam o sinal inteiro; o espectro Welch é calculado em lotes de canais para
+reduzir o pico de memória. A figura geral usa um envelope mínimo/máximo que
+preserva os picos entre os pontos exibidos. A resolução dos contornos visuais PCA
+é 120 × 120.
+
+Cada relatório gerado pelo protocolo tem um link **Tempos da análise**, para
+`_qc/<identificador>/analysis_timing.json`. O arquivo registra o tempo de leitura,
+de cada divisão da CV, do modelo final, das figuras, dos checks e do catálogo,
+além de frequência, canais, janelas e configurações efetivas. O terminal do VS Code
+também mostra o início de cada etapa. Se a análise continuar demorada na estação,
+esse arquivo permite localizar o custo sem repetir a coleta.
 A seleção rejeita etapa/perna/frequência incompatíveis. Carregue apenas modelos
 locais confiáveis, pois os artefatos usam pickle.
 
@@ -403,6 +434,7 @@ na interface do outro computador. Ao clonar apenas o projeto em outro laboratór
 o cadastro e os dados daquele laboratório começam na pasta externa escolhida lá.
 
 - `main.py`: fluxo das fases, escolha do modelo e supervisão dos componentes.
+- `analysis.py`: passo de treino, limite de CPU e tempos da análise entre blocos.
 - `operator.py`: janela de operação; `protocol.py`: sequência/tempos.
 - `catalog.py`: cadastro, índice e anotações; `theme.py`: cores da interface.
 - `signal_preview.py`: snapshot ao vivo e após o bloco; `storage.py`: destino dos dados.

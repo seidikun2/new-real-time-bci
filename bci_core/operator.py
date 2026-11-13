@@ -741,12 +741,22 @@ class Operator:
             self.live_inlet.close_stream()
             self.live_inlet = None
 
-    def run_job(self, title, function, *args, **kwargs):
+    def run_job(self, title, function, *args, report_progress=False, **kwargs):
         self.page(title, 'Operação em andamento. Acompanhe nesta janela.')
         self.parameters.configure(state='disabled')
         progress = self.ttk.Progressbar(self.body, mode='indeterminate')
         progress.pack(fill='x', pady=25)
         progress.start(25)
+        messages = Queue()
+        self.job_phase = self.tk.StringVar(value='Iniciando…')
+        self.job_elapsed = self.tk.StringVar(value='Tempo decorrido: 0 s')
+        self.ttk.Label(self.body, textvariable=self.job_phase, wraplength=950).pack(anchor='w')
+        self.ttk.Label(self.body, textvariable=self.job_elapsed, style='Muted.TLabel').pack(
+            anchor='w', pady=8
+        )
+        started = time.perf_counter()
+        if report_progress:
+            kwargs['progress'] = messages.put
         result = Queue()
         finished = self.tk.BooleanVar(value=False)
         def worker():
@@ -755,6 +765,9 @@ class Operator:
             except Exception as exc:
                 result.put((False, exc))
         def poll():
+            while not messages.empty():
+                self.job_phase.set(messages.get_nowait())
+            self.job_elapsed.set(f'Tempo decorrido: {time.perf_counter()-started:.0f} s')
             try:
                 self.job_result = result.get_nowait()
                 finished.set(True)
@@ -796,6 +809,8 @@ class Operator:
         inspection_only = diagnostic or resting
         accuracy = cv.get('acc_mean')
         text = f'Acurácia CV: {accuracy:.1%}' if accuracy is not None else 'Acurácia não estimada'
+        if qc.get('analysis_timing'):
+            text += f" · análise em {qc['analysis_timing']['total_s']:.1f} s"
         if diagnostic:
             text = 'Diagnóstico de aquisição · sem treino de modelo'
         if resting:

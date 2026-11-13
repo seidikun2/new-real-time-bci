@@ -246,6 +246,25 @@ class PersistentOperatorTests(unittest.TestCase):
         self.assertLessEqual(self.op.buttons.winfo_y()+self.op.buttons.winfo_height(), self.op.root.winfo_height())
         self.assert_one_window()
 
+    def test_analysis_stage_and_elapsed_time_update_while_the_worker_runs(self):
+        seen = []
+
+        def worker(progress):
+            progress('Validação por tentativa · divisão 1/5')
+            time.sleep(0.3)
+            progress('Gerando o relatório')
+            time.sleep(0.15)
+            return 42
+
+        self.op.root.after(
+            180, lambda: seen.append((self.op.job_phase.get(), self.op.job_elapsed.get()))
+        )
+        self.assertEqual(self.op.run_job('Analisando', worker, report_progress=True), 42)
+        self.assertIn('divisão 1/5', seen[0][0])
+        self.assertIn('Tempo decorrido:', seen[0][1])
+        self.assertEqual(self.op.job_phase.get(), 'Gerando o relatório')
+        self.assert_one_window()
+
     def test_report_link_large_figures_and_scrollable_64_channel_snapshot(self):
         from unittest.mock import patch
         import numpy as np

@@ -172,6 +172,13 @@ def write_report(cfg, report, evaluation, signal_file, folder):
             actual = f'{duration:.1f} s' if duration is not None else 'incompleto'
             notes += f"<p><strong>{escape(condition['label'])}:</strong> {actual} (planejado: {condition['planned_s']:g} s).</p>"
     usable = evaluation.get('usable_data', {})
+    if evaluation.get('training_step_s'):
+        notes += (
+            f"<p>Treino: {evaluation.get('training_windows', '—')} janelas de "
+            f"{evaluation['window_s']:g} s, passo de {evaluation['training_step_s']:g} s. "
+            f"Atualização online: {evaluation['step_s']:g} s. Todos os canais selecionados "
+            'participam da classificação; PCA é apenas visual.</p>'
+        )
     if usable:
         notes += (f"<p>Treino: {usable['usable_samples']}/{usable['total_samples']} amostras utilizáveis; "
                   f"{usable['excluded_samples']} excluídas. {usable['windows_used']} janelas de "
@@ -194,6 +201,11 @@ def write_report(cfg, report, evaluation, signal_file, folder):
         request_note = 'Tentativa de coleta iniciada em ' + display_time(collection['requested_at']) + '. '
         request_note += 'Nenhuma amostra EEG foi recebida.' if report['samples'] == 0 else 'Horário das amostras não registrado.'
     fields = {
+        'analysis_download': (
+            ' · <a href="analysis_timing.json">Tempos da análise</a>'
+            if report.get('analysis_timing_file')
+            else ''
+        ),
         'timing': timing_report(report.get('timing_audit', {}), folder),
         'realtime': realtime_report(report.get('realtime', {}), folder),
         'session': escape(collection['block_type']),

@@ -191,7 +191,7 @@ class PipelineTests(unittest.TestCase):
         operator.closing = False
         operator.prepare_block.return_value = True
         operator.review_block.return_value = 'next'
-        operator.run_job.side_effect = lambda title, function, *args: function(*args)
+        operator.run_job.side_effect = lambda title, function, *args, **kwargs: function(*args)
         cfg = self.cfg
         cfg.protocol.start_phase = 'auto'
         fake = {'complete': True, 'markers_file': 'm', 'signal_file': 's'}

@@ -139,9 +139,13 @@ realtime:
   max_output_age_s: 0.50
   blas_threads: 1          # evita disputar vários núcleos por cada matriz pequena
 
+analysis:
+  training_step_s: 0.25    # treino menos redundante; null usa step_s (0.05). Online permanece em 0.05 s
+  blas_threads: 1          # limita disputa de CPU e memória durante a análise entre blocos
+
 representation_feedback:
   pad_frac        : 0.10
-  grid_size       : 240
+  grid_size       : 120    # resolução dos contornos visuais; não altera classificação
   density_masses  : [0.50, 0.80, 0.95]
   show_labels     : true
 
