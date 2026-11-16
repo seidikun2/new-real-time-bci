@@ -25,6 +25,12 @@ class TimingPreview:
         if data['phase'] != 'warmup' and data['health'].get('waiting_for_batch'):
             self.status.set(self.status.get() + ' A espera isolada não invalida os dados recebidos.')
         values = []
+        inlet = data.get('inlet_recovery', {})
+        if inlet.get('resets'):
+            values.append(
+                f"Inlet de trabalho reaberto {inlet['resets']} vez(es) após pausa; "
+                f"{inlet['discarded_buffer_samples']} amostras pendentes descartadas. Auditoria original preservada."
+            )
         recovery = data.get('recovery', {})
         if recovery.get('episodes'):
             values.append(f"Episódios marcados: {len(recovery['episodes'])} · "

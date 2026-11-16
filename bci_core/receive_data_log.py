@@ -16,6 +16,7 @@ from .acquisition import stream_layout
 from .storage import external_path, session_path, canonical_block
 from .catalog import ensure_session, index_recording
 from .lsl_timing import timing_options, signal_processing_flags, TimingMonitor
+from .lsl_recovery import DejitterRecovery
 
 from pylsl import StreamInlet, local_clock, resolve_byprop
 
@@ -55,7 +56,11 @@ def resolve_signal(cfg, stop, timeout=30., processing_flags=None):
             cfg._signal_source_id = selected.source_id()
             cfg._signal_uid = selected.uid()
             flags = signal_processing_flags(cfg) if processing_flags is None else processing_flags
-            return StreamInlet(selected, recover=bool(selected.source_id()), processing_flags=flags)
+            inlet = StreamInlet(
+                selected, recover=bool(selected.source_id()), processing_flags=flags
+            )
+            inlet._resolved_info = selected
+            return inlet
     raise TimeoutError('EEG não encontrado. Inicie o transmissor e confira nome/tipo LSL na tela inicial.')
 
 
@@ -79,6 +84,7 @@ class BlockRecorder:
         self.max_queue_batches = self.unwritten_samples = 0
         self.timing_options = timing_options(cfg)
         self.timing = TimingMonitor(self.timing_options)
+        self.inlet_recovery = DejitterRecovery(cfg)
         self.source_audit = self.timing.audits['source']
         self.synced_audit = self.timing.audits['clock_synced']
         self.working_audit = self.timing.audits['working']
@@ -140,9 +146,24 @@ class BlockRecorder:
         errors = []
         reader = None
         last_received = {}
-        trace_fields = ['stream', 'phase', 'elapsed_s', 'received_lsl_s', 'received_unix_s', 'batch_samples',
-                        'first_timestamp_s', 'last_timestamp_s', 'clock_correction_s', 'age_s',
-                        'batch_error', 'batch_warning', 'receive_gap_s', 'queue_batches', 'write_lag_s']
+        trace_fields = [
+            'stream',
+            'phase',
+            'elapsed_s',
+            'received_lsl_s',
+            'received_unix_s',
+            'batch_samples',
+            'first_timestamp_s',
+            'last_timestamp_s',
+            'clock_correction_s',
+            'age_s',
+            'batch_error',
+            'batch_warning',
+            'receive_gap_s',
+            'queue_batches',
+            'write_lag_s',
+            'inlet_reset',
+        ]
         try:
             info = inlet.info()
             indices, factors, self.stream_metadata = stream_layout(self.cfg, info)
@@ -159,6 +180,7 @@ class BlockRecorder:
             self.metadata['timing'] = self.timing_summary()
             self.save_metadata(self.metadata)
             def receive():
+                nonlocal inlet
                 try:
                     while not stop.is_set() and not reader_stop.is_set():
                         for kind, current in [('working', inlet), ('raw', raw_inlet)]:
@@ -179,6 +201,14 @@ class BlockRecorder:
                             row.update(received_unix_s=unix,
                                        receive_gap_s=received-last_received[kind] if kind in last_received else None,
                                        queue_batches=batches.qsize(), write_lag_s=None)
+                            reset = (
+                                self.inlet_recovery.observe(
+                                    stamps, received_lsl, received - self.timing.origin
+                                )
+                                if kind == 'working'
+                                else None
+                            )
+                            row['inlet_reset'] = int(reset is not None)
                             last_received[kind] = received
                             with self.timing.lock:
                                 self.timing_history.append(row)
@@ -197,6 +227,8 @@ class BlockRecorder:
                                 self.unwritten_samples += len(stamps)
                                 raise RuntimeError(f'Fila de gravação cheia: {len(stamps)} amostras deste lote não foram gravadas.')
                             self.max_queue_batches = max(self.max_queue_batches, batches.qsize())
+                            if reset is not None and not stop.is_set() and not reader_stop.is_set():
+                                inlet = self.inlet_recovery.reopen(inlet, info, reset)
                 except Exception as exc:
                     errors.append(exc)
                 finally:
@@ -256,14 +288,21 @@ class BlockRecorder:
                 raw_inlet.close_stream()
 
     def timing_summary(self):
-        return dict(method=self.timing_options['method'], options=self.timing_options,
-                    raw_file=str(self.raw_path.resolve()) if self.timing_options['audit'] else None,
-                    audit_note='Inlet independente: índices e contagens não são pareados aos do arquivo de trabalho.',
-                    **self.timing.summary(local_clock(), time.monotonic()-self.timing.origin),
-                    trace_file=str(self.timing_path.resolve()), received_samples=self.received_samples,
-                    written_samples=self.samples, unwritten_samples=self.unwritten_samples,
-                    max_receive_pause_s=self.max_receive_pause_s, max_write_lag_s=self.max_write_lag_s,
-                    max_queue_batches=self.max_queue_batches)
+        return dict(
+            method=self.timing_options['method'],
+            options=self.timing_options,
+            raw_file=str(self.raw_path.resolve()) if self.timing_options['audit'] else None,
+            audit_note='Inlet independente: índices e contagens não são pareados aos do arquivo de trabalho.',
+            **self.timing.summary(local_clock(), time.monotonic() - self.timing.origin),
+            trace_file=str(self.timing_path.resolve()),
+            received_samples=self.received_samples,
+            written_samples=self.samples,
+            unwritten_samples=self.unwritten_samples,
+            max_receive_pause_s=self.max_receive_pause_s,
+            max_write_lag_s=self.max_write_lag_s,
+            max_queue_batches=self.max_queue_batches,
+            inlet_recovery=self.inlet_recovery.summary(),
+        )
 
     def timing_health(self):
         return self.timing.current_health(local_clock(), time.monotonic()-self.timing.origin)
@@ -274,9 +313,16 @@ class BlockRecorder:
     def timing_preview(self):
         with self.timing.lock:
             elapsed = self.timing.finished[1] if self.timing.finished is not None else time.monotonic()-self.timing.origin
-            return dict(rows=[row.copy() for row in self.timing_history], options=self.timing_options,
-                        health=self.timing_health(), phase=self.timing.phase, protocol_started_s=self.timing.protocol_started_s,
-                        elapsed_s=elapsed, recovery=self.timing.recovery.summary(elapsed))
+            return dict(
+                rows=[row.copy() for row in self.timing_history],
+                options=self.timing_options,
+                health=self.timing_health(),
+                phase=self.timing.phase,
+                protocol_started_s=self.timing.protocol_started_s,
+                elapsed_s=elapsed,
+                recovery=self.timing.recovery.summary(elapsed),
+                inlet_recovery=self.inlet_recovery.summary(),
+            )
 
     def snapshot(self):
         with self.preview_lock:

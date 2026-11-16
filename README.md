@@ -243,6 +243,21 @@ A inferência descarta trechos inválidos e recompõe a janela. Problemas de aqu
 contínuos por 3 s, falhas de componentes e ausência prolongada de EEG encerram o bloco.
 
 Para EEG externo, a recepção usa **clocksync + dejitter + monotonize do próprio LSL**.
+Se uma pausa de recepção maior que `max(0.3, 2 × max_gap_s)` deixa o último
+timestamp fora de `max_age_s`, `reset_dejitter_on_gap: true` reabre o inlet de
+trabalho usando a identidade resolvida do mesmo transmissor. Isso cria um novo
+regularizador LSL; não fabrica timestamps nem altera os horários já gravados.
+O gravador e o decoder usam essa recuperação. A auditoria original permanece
+aberta e independente. Amostras que ainda estavam no buffer do inlet fechado
+podem ser descartadas; a contagem e os eventos ficam em `inlet_recovery` nos
+metadados/`quality.json`. A telemetria por lote marca a solicitação em `inlet_reset`.
+Essa contagem cobre apenas o buffer local; não estima perdas na fonte/rede ou
+durante a troca de conexão.
+Os trechos temporalmente inválidos continuam excluídos do treino, e o decoder
+recomeça sua janela causal com EEG recente. Pausas com timestamps recentes não
+provocam reabertura. Erros de disco, perda da fonte e falhas temporais que não
+se recuperam continuam sujeitos às interrupções existentes. A opção pode ser
+desativada para comparação com o comportamento anterior.
 O arquivo `*_signal_*.csv` guarda os horários de trabalho. Um segundo inlet grava
 uma cópia independente `*_raw_eeg_*.csv`, com todos os canais publicados, amplitudes
 na escala original, `source_lsl_time_s` sem pós-processamento e `clock_correction_s`.

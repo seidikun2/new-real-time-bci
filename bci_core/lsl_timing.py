@@ -18,15 +18,22 @@ def timing_options(cfg):
     strict_raw = options.get('strict_raw_timestamps', False)
     if not isinstance(strict_raw, bool):
         raise ValueError('strict_raw_timestamps deve ser true ou false.')
-    result = dict(method=method, audit=external,
-                  strict_raw_timestamps=strict_raw,
-                  max_backward_s=float(options.get('max_backward_s', .02)),
-                  max_gap_s=float(options.get('max_gap_s', .1)),
-                  max_age_s=float(options.get('max_age_s', .25)),
-                  max_bad_duration_s=float(options.get('max_bad_duration_s', 3.)),
-                  warmup_s=float(options.get('warmup_s', 5.)) if external else 1.,
-                  stable_s=float(options.get('stable_s', 2.)) if external else 0.,
-                  queue_batches=int(options.get('queue_batches', 128)))
+    reset = options.get('reset_dejitter_on_gap', True)
+    if not isinstance(reset, bool):
+        raise ValueError('reset_dejitter_on_gap deve ser true ou false.')
+    result = dict(
+        method=method,
+        audit=external,
+        reset_dejitter_on_gap=reset,
+        strict_raw_timestamps=strict_raw,
+        max_backward_s=float(options.get('max_backward_s', 0.02)),
+        max_gap_s=float(options.get('max_gap_s', 0.1)),
+        max_age_s=float(options.get('max_age_s', 0.25)),
+        max_bad_duration_s=float(options.get('max_bad_duration_s', 3.0)),
+        warmup_s=float(options.get('warmup_s', 5.0)) if external else 1.0,
+        stable_s=float(options.get('stable_s', 2.0)) if external else 0.0,
+        queue_batches=int(options.get('queue_batches', 128)),
+    )
     if any(not np.isfinite(result[k]) or result[k] <= 0 for k in ['max_backward_s', 'max_gap_s', 'max_age_s']):
         raise ValueError('Os limites temporais devem ser positivos e finitos.')
     if not 0 <= result['warmup_s'] <= 60 or not 0 <= result['stable_s'] <= 30 or not 1 <= result['queue_batches'] <= 1024:

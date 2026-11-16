@@ -91,6 +91,7 @@ protocol:
 # Trechos afetados são excluídos; falhas persistentes interrompem. Originais permanecem auditados.
 acquisition_timing:
   method: dejitter        # dejitter = clocksync + dejitter + monotonize; clocksync = apenas relógio
+  reset_dejitter_on_gap: true # reabre o inlet se uma pausa deixa os horários regularizados vencidos
   warmup_s: 5.0          # antes dos estímulos; as amostras são preservadas
   stable_s: 2.0          # estabilidade recente exigida antes dos estímulos, após o warmup
   strict_raw_timestamps: false  # true também interrompe por recuos/lacunas na auditoria original

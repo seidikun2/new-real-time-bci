@@ -26,6 +26,13 @@ def inspect_quality(times, X, names, marker_times, labels, cfg, progress=None):
     issues = []
     observations = list(getattr(cfg, '_stream_observations', []))
     audit = getattr(cfg, '_timing_audit', {})
+    reconnect = audit.get('inlet_recovery', {})
+    if reconnect.get('resets'):
+        observations.append(
+            f"Recuperação LSL: {reconnect['resets']} reabertura(s) do inlet após pausa, "
+            f"{reconnect['discarded_buffer_samples']} amostras pendentes descartadas. "
+            'Os timestamps originais não foram reescritos. Consulte os eventos na auditoria temporal.'
+        )
     if audit.get('training_error'):
         issues.append(audit['training_error'])
     issues.extend(audit.get('warnings', []))

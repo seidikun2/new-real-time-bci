@@ -14,6 +14,7 @@ from pylsl import StreamInfo, StreamOutlet, local_clock
 from .config_models import AppConfig
 from .acquisition import stream_layout
 from .receive_data_log import resolve_signal, make_log_dir
+from .lsl_recovery import DejitterRecovery
 from .data import select_channel_indices as select_channels
 from .representation_feedback import transform_online_representation
 from .feedback_contract import SIGNAL_CHANNELS, classifier_probabilities, signal_vector
@@ -230,8 +231,10 @@ def run_realtime_decoder(cfg: AppConfig, mode: str = "online", model_prefix: Opt
     buffer = LatestWindow(win_n, len(sel_idx), sos, fs, options['max_output_age_s'], monitor)
     reader_stop = threading.Event()
     reader_errors = []
+    inlet_recovery = DejitterRecovery(cfg)
 
     def receive():
+        nonlocal inlet
         try:
             while not stop_event.is_set() and not reader_stop.is_set():
                 data, stamps = inlet.pull_chunk(timeout=.02, max_samples=max(64, round(fs*2)))
@@ -240,6 +243,14 @@ def run_realtime_decoder(cfg: AppConfig, mode: str = "online", model_prefix: Opt
                 now = local_clock()
                 X = np.asarray(data, float)[:, source_indices] * source_scales
                 buffer.ingest(X[:, sel_idx], stamps, now)
+                reset = inlet_recovery.observe(stamps, now, time.monotonic() - monitor.origin)
+                if reset is not None and not stop_event.is_set() and not reader_stop.is_set():
+                    buffer.reset()
+                    inlet = inlet_recovery.reopen(inlet, info, reset)
+                    monitor.update(
+                        status='Recepção EEG reaberta após pausa',
+                        inlet_recovery=inlet_recovery.summary(),
+                    )
                 backlog = inlet.samples_available()
                 previous = monitor.snapshot()['max_inlet_backlog_samples']
                 monitor.update(inlet_backlog_samples=backlog,
@@ -323,6 +334,7 @@ def run_realtime_decoder(cfg: AppConfig, mode: str = "online", model_prefix: Opt
     finally:
         reader_stop.set()
         reader.join(timeout=2.)
+        monitor.update(inlet_recovery=inlet_recovery.summary())
         inlet.close_stream()
         fcsv.close()
         if reader_errors:
