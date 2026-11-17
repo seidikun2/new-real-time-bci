@@ -1,0 +1,21 @@
+{
+    "workbench.colorCustomizations": {
+        "commandCenter.background": "#2563EB",
+        "commandCenter.foreground": "#FFFFFF",
+        "commandCenter.inactiveForeground": "#FFFFFF",
+        "commandCenter.activeBackground": "#2563EB",
+        "commandCenter.activeForeground": "#FFFFFF",
+        "commandCenter.border": "#2563EB",
+        "commandCenter.activeBorder": "#2563EB",
+        "commandCenter.inactiveBorder": "#2563EB",
+        "window.activeBorder": "#2563EB",
+        "window.inactiveBorder": "#2563EB",
+        "titleBar.border": "#2563EB",
+        "titleBar.activeBackground": "#2563EB",
+        "titleBar.activeForeground": "#FFFFFF",
+        "titleBar.inactiveBackground": "#1B4297",
+        "titleBar.inactiveForeground": "#FFFFFF",
+        "modernUI.shellBackground": "#101B35",
+        "modernUI.inactiveShellBackground": "#0D121F"
+    }
+}

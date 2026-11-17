@@ -37,7 +37,7 @@ runtime:
 
 resting_state:
   enabled: true                 # antes da execução motora; comando pelo experimentador
-  duration_s: 45.0               # por condição; 30 ou 45 s também disponíveis na interface
+  duration_s: 10.0               # por condição; 30 ou 45 s também disponíveis na interface
 
 protocol:
   stage          : "single_target"  # single_target | two_legs
@@ -77,7 +77,7 @@ protocol:
       session_type  : "IM_online_duas_pernas_sem_feedback"
 
   # Perfil atual: 15 tentativas por classe = 45 trials.
-  trials_per_class : 15
+  trials_per_class : 3
   baseline_s       : 3.0
   attention_s      : 2.0
   cue_s            : 1.25
