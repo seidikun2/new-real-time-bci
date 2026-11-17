@@ -18,6 +18,8 @@ from bci_core.catalog import (
     save_block_comment,
     session_recordings,
     save_session,
+    save_subject,
+    read_subjects,
     session_defaults,
     write_json,
     write_table,
@@ -81,6 +83,86 @@ class CatalogTests(unittest.TestCase):
             },
         )
         return signal
+
+    def test_subject_registration_exists_without_a_session_and_is_reused(self):
+        save_subject(self.root, self.profile())
+        self.assertEqual(len(read_subjects(self.root)), 1)
+        self.assertFalse((self.root / 'CTRL' / 'P001' / 'S1').exists())
+        self.assertTrue((self.root / 'CTRL' / 'P001' / 'subject.json').exists())
+        fields, rows = read_table(self.root / 'sujeitos.csv')
+        self.assertIn('Código', fields)
+        self.assertEqual(rows[0]['Código'], 'P001')
+        self.assertEqual(rows[0]['Idade'], '')
+        self.assertEqual(session_defaults(self.root, 'CTRL', 'P001', 2)['cap'], 'M / 64 canais')
+
+    def test_subject_updates_do_not_replace_recorded_demographics(self):
+        save_session(self.root, self.profile(age='40'))
+        self.cfg.experiment.age, self.cfg.experiment.cap = '40', 'M'
+        signal = self.recording()
+        save_subject(self.root, self.profile(age='41', cap='G', laterality='right'))
+        self.assertEqual(session_defaults(self.root, 'CTRL', 'P001', 2)['age'], '41')
+        context = context_for_signal(signal, self.root)
+        self.assertEqual(context['age'], '40')
+        self.assertEqual(context['cap'], 'M')
+
+    def test_tables_rebuild_from_recording_metadata_after_move_and_csv_deletion(self):
+        save_session(self.root, self.profile())
+        signal = self.recording()
+        original = signal.read_bytes()
+        row = index_recording(signal, self.root)
+        row.update(
+            include='0',
+            bad_channels='C3',
+            reason='Curadoria manual',
+            custom_field='valor',
+            cv_accuracy='0.75',
+            cv_status='ok',
+        )
+        write_table(self.root / 'dataset_index.csv', INDEX_FIELDS, [row])
+        refresh_catalog(self.root)
+        save_block_comment(signal, 'Nota permanente.\nSegunda linha.', self.root)
+        moved_folder = self.root / 'arquivo' / 'bloco_movido'
+        moved_folder.parent.mkdir()
+        shutil.move(str(signal.parent), moved_folder)
+        moved = moved_folder / signal.name
+        for name in ['dataset_index.csv', 'sessions.csv', 'sujeitos.csv', 'dados.csv']:
+            (self.root / name).unlink()
+        rows = refresh_catalog(self.root)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['signal_path'], moved.relative_to(self.root).as_posix())
+        self.assertEqual(rows[0]['comment'], 'Nota permanente.\nSegunda linha.')
+        for key in [
+            'run_id',
+            'include',
+            'bad_channels',
+            'reason',
+            'custom_field',
+            'cv_accuracy',
+            'cv_status',
+        ]:
+            self.assertEqual(rows[0][key], row[key])
+        self.assertEqual(read_table(self.root / 'dados.csv')[1][0]['Acurácia CV'], '75.0%')
+        self.assertEqual(moved.read_bytes(), original)
+        current, _ = session_recordings(self.cfg)
+        self.assertEqual(len(current), 1)
+        self.assertIn(
+            'Nota permanente.', (self.root / 'CTRL' / 'P001' / 'S1' / 'session.txt').read_text()
+        )
+        moved.unlink()
+        self.assertEqual(refresh_catalog(self.root), [])
+        self.assertEqual(read_table(self.root / 'dataset_index.csv')[1], [])
+
+    def test_moving_a_csv_alone_recovers_its_sidecar_from_the_previous_location(self):
+        signal = self.recording()
+        save_block_comment(signal, 'Observação preservada.', self.root)
+        destination = self.root / 'arquivo'
+        destination.mkdir()
+        moved = destination / signal.name
+        shutil.move(signal, moved)
+        rows = refresh_catalog(self.root)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['comment'], 'Observação preservada.')
+        self.assertTrue(moved.with_suffix('.json').exists())
 
     def test_new_paths_group_subject_session_and_clear_feedback_names(self):
         self.cfg.experiment.session_type = 'IM_online_target_PCA'

@@ -23,7 +23,7 @@ def realtime_report(stats, folder):
         graph = '<p><a href="decoder_timing.csv">Baixar tempos do decoder (CSV, sem EEG)</a></p>'
         if len(frame):
             import matplotlib.pyplot as plt
-            with plt.rc_context({'font.size': 10}):
+            with plt.rc_context({'font.size': 13}):
                 fig, axes = plt.subplots(2, 1, figsize=(13, 7), layout='constrained')
                 axes[0].plot(frame.elapsed_s, frame.input_age_s*1000, label='Idade do EEG ao iniciar o cálculo')
                 axes[0].plot(frame.elapsed_s, frame.output_age_s*1000, label='Idade ao concluir o cálculo')
@@ -36,7 +36,7 @@ def realtime_report(stats, folder):
                 for ax in axes:
                     ax.set(xlabel='Tempo desde a preparação do decoder (s)', ylabel='ms')
                     ax.grid(alpha=.15)
-                    ax.legend(fontsize=8)
+                    ax.legend(fontsize=11)
                 fig.savefig(folder/'decoder_timing.png', dpi=145, facecolor='white')
                 plt.close(fig)
             p95 = np.percentile(frame.compute_s, 95)*1000

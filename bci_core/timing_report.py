@@ -22,7 +22,7 @@ def timing_report(audit, folder):
         if not frame.empty:
             import matplotlib.pyplot as plt
             from matplotlib.ticker import MaxNLocator
-            with plt.rc_context({'font.size':10}):
+            with plt.rc_context({'font.size': 13}):
                 fig, axes = plt.subplots(2, 2, figsize=(13, 9), layout='constrained')
                 for kind, label, color in [('raw','Original sincronizado','#64748b'), ('working','Trabalho','#1678b4')]:
                     data = frame[frame.stream==kind]
@@ -32,12 +32,12 @@ def timing_report(audit, folder):
                     axes[0,0].axhline(value,color='#be4c45',ls='--',lw=.8)
                 axes[0,0].axhline(0,color='#94a3b8',lw=.7)
                 axes[0,0].set(title='Horário da última amostra ao receber o lote', ylabel='Desvio assinado (ms)')
-                axes[0,0].legend(fontsize=8)
+                axes[0, 0].legend(fontsize=11)
                 work = frame[frame.stream=='working']
                 axes[0,1].plot(work.elapsed_s, work.receive_gap_s*1000, label='Pausa entre lotes recebidos',color='#64748b',lw=1)
                 axes[0,1].plot(work.elapsed_s, work.write_lag_s*1000, label='Recepção até gravação',color='#1678b4',lw=1)
                 axes[0,1].set(title='Recepção e escrita são medidas diferentes',ylabel='Duração (ms)')
-                axes[0,1].legend(fontsize=8)
+                axes[0, 1].legend(fontsize=11)
                 raw = frame[frame.stream=='raw']
                 if len(raw):
                     correction = raw.clock_correction_s

@@ -284,8 +284,8 @@ def run_check_data(
         report['snapshot_file'] = str(snapshot_file.resolve())
     (folder / 'quality.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     progress('Gerando as figuras de sinal, espectro e artefatos')
-    plt.rcParams.update({'font.size': 9})
-    fig, axes = plt.subplots(3, 1, figsize=(13, max(12, len(names)*.34)), layout='constrained')
+    plt.rcParams.update({'font.size': 12})
+    fig, axes = plt.subplots(3, 1, figsize=(15, max(14, len(names) * 0.6)), layout='constrained')
     origin = times[np.isfinite(times)][0] if np.isfinite(times).any() else 0.
     center = np.array([row['median'] for row in report['channels']])
     scales = np.maximum([row['robust_scale'] for row in report['channels']], 1e-9)
@@ -307,7 +307,9 @@ def run_check_data(
         for ts, label in zip(tm, labels):
             if label in {'LEFT_MI_STIM', 'RIGHT_MI_STIM', 'REST_STIM'}:
                 axes[0].axvline(ts-origin, alpha=.25, color={'LEFT_MI_STIM':'blue','RIGHT_MI_STIM':'red','REST_STIM':'gray'}[label])
-        axes[0].set_xlabel('Tempo desde primeira amostra (s); azul LEFT, vermelho RIGHT, cinza REST_STIM')
+        axes[0].set_xlabel(
+            'Tempo desde primeira amostra (s); azul: esquerda; vermelho: direita; cinza: repouso'
+        )
     peak = np.maximum(psd.max(axis=0), np.finfo(float).tiny)
     relative = 10*np.log10(np.maximum(psd/peak, np.finfo(float).tiny))
     image = axes[1].imshow(relative.T, aspect='auto', origin='lower', cmap='Greys', vmin=-60, vmax=0,
@@ -319,8 +321,11 @@ def run_check_data(
     fig.colorbar(image, ax=axes[1], label='dB relativos')
     axes[2].imshow(bad.T, aspect='auto', interpolation='nearest', cmap='Reds', vmin=0, vmax=1)
     axes[2].set_yticks(range(len(names)), names)
-    axes[2].set(xlabel='Janela de ~1 s (índice de amostras; consulte lacunas)', title='Artefatos: vermelho = amplitude, flatline, pico robusto ou NaN/Inf')
-    fig.savefig(folder / 'overview.png', dpi=130)
+    axes[2].set(
+        xlabel='Janela de ~1 s (índice de amostras; consulte lacunas)',
+        title='Artefatos: vermelho = amplitude, canal plano, pico robusto ou valor não finito',
+    )
+    fig.savefig(folder / 'overview.png', dpi=110)
     plt.close(fig)
     import pandas as pd
     pd.DataFrame(report['channels']).to_csv(folder / 'channels.csv', index=False)

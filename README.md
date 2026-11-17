@@ -23,9 +23,12 @@ Em cada sessão:
 1. Abra o projeto no VS Code, selecione **BCI: conduzir experimento** e pressione F5.
 2. Na única janela da aplicação, escolha o grupo (**TEST, CTRL, LM ou LION**),
    participante e sessão. Em **Coleta**, escolha etapa, aquisição e a pasta de dados
-   do laboratório, fora do projeto. Em **Cadastro da sessão**, informe touca,
-   lateralidade, data da coleta e nome do experimentador/a. Idade e sexo são opcionais.
-   O cadastro é salvo automaticamente e reaparece ao abrir a aplicação. A lateralidade
+   do laboratório, fora do projeto. Em **Cadastro do sujeito**, informe touca e
+   lateralidade; idade e sexo são opcionais. Esse cadastro é feito uma vez por
+   grupo/código e pode ser editado; ao selecionar um código existente, os dados
+   reaparecem automaticamente. **Abrir cadastro geral** abre a tabela de sujeitos.
+   Em **Dados da sessão**, confira a data da coleta e o nome do experimentador/a.
+   Os campos são salvos automaticamente. A lateralidade
    define diretamente a perna de controle na etapa de uma perna: Esquerda controla
    a esquerda, Direita controla a direita. Os detalhes de aquisição ficam em **Parâmetros**.
 3. Para ANT Neuro, o nome `EE225-020034-000905_on_DESKTOP-U197OKE` já está configurado.
@@ -35,16 +38,16 @@ Em cada sessão:
 4. Clique **Iniciar bloco**. A mesma janela acompanha conexão, amostras gravadas,
    fase/cue atual e um **snapshot dos últimos cinco segundos** do sinal, atualizado
    a cada segundo. Os canais têm a mesma cor e nomes no eixo vertical; use a rolagem
-   para inspecionar todos os canais. No online, o ponto PCA do experimentador fica
+   para inspecionar todos os canais ou clique em **Ampliar sinal**. No online, o ponto PCA do experimentador fica
    em outra aba. **Interromper e salvar** encerra o bloco preservando os dados.
 5. Ao terminar, a análise e o treino são feitos em background. A tela mostra a
    etapa atual (leitura, divisão da validação, modelo, PCA ou checks) e o tempo
    decorrido. O resultado, o mapa
-   PCA, a matriz de confusão e o snapshot aparecem em abas maiores, sem abrir
+   PCA, a matriz de confusão e a prévia do sinal aparecem em abas maiores, sem abrir
    navegador nem pedir confirmação de cada check. Escolha **Próximo bloco**, **Repetir bloco** ou
    **Encerrar sessão**. O link **Abrir relatório completo** fica visível entre blocos,
    inclusive na preparação do próximo, e abre o relatório no navegador ao clicar.
-   O campo opcional **Anotações do bloco** salva automaticamente observações sobre
+   A aba opcional **Anotações do bloco** salva automaticamente observações sobre
    a coleta, inclusive em blocos interrompidos. Ele não aparece no repouso de olhos
    abertos/fechados.
 6. Antes do online, selecione explicitamente o modelo na própria janela. Também
@@ -65,15 +68,22 @@ anteriores se a aplicação foi reaberta. A CV é uma estimativa **dentro de cad
 bloco**, separada do modelo ativo no online. Registros sem treino não recebem uma
 acurácia inventada. A tela usa os resultados já salvos; não relê o EEG nem refaz o
 treino. Os botões **Abrir pasta**, **Pasta do bloco**, **Relatório completo** e
-**Abrir tabela CSV** dão acesso aos arquivos existentes.
+**Abrir tabela de dados** dão acesso aos arquivos existentes. Ao retornar à janela,
+o resumo consulta novamente os arquivos; **Atualizar tabela** faz isso imediatamente.
+Sinais removidos deixam de aparecer, e sinais movidos dentro da pasta de dados
+recebem seus caminhos atuais.
 
 Não há sequência de pop-ups para confirmação, qualidade ou resultados. Janelas
-adicionais ficam reservadas a parâmetros e ao seletor de arquivo solicitado pelo
-operador. Avisos e falhas aparecem na área de mensagens da janela principal.
+adicionais são abertas somente por solicitação do operador: parâmetros, seletor de
+arquivo ou ampliação do sinal/figura. Avisos e falhas aparecem na janela principal.
 Os relatórios completos continuam na pasta `_qc` e podem ser abertos quando desejado.
 O snapshot usa escala robusta por canal e limita os picos na exibição. A redução
-de pontos preserva mínimos e máximos para facilitar a inspeção; o CSV recebe todas
-as amostras na escala de gravação.
+de pontos preserva mínimos e máximos **com seus horários originais, em ordem
+temporal por canal**, evitando linhas artificiais em serrote. A quantidade de
+pontos é limitada pela largura da tela e só os canais visíveis têm suas curvas
+desenhadas. A janela ampliada compartilha a mesma prévia, sem criar outra conexão
+de aquisição. O CSV recebe todas as amostras na escala de gravação. O desenho
+não aplica suavização que esconda picos do sinal.
 
 Em Linux, a operação gráfica precisa de desktop e Tk. O teste de simulação abaixo
 funciona sem desktop. Na estação do laboratório, inicie o transmissor e o Unity
@@ -422,12 +432,16 @@ inclusive por links simbólicos. Dados existentes não são movidos automaticame
 
 ```text
 <pasta_dos_dados>/
+  sujeitos.csv
+  dados.csv
   sessions.csv
   dataset_index.csv
   CTRL/
     P001/
+      subject.json
       S1/
         session.json
+        session.txt
         Repouso_olhos/resting/
         EM_treino/train/
         IM_treino/train/
@@ -439,15 +453,31 @@ Cada par de CSVs compartilha um identificador único. O JSON ao lado do sinal
 registra conclusão/interrupção, configuração efetiva, sequência e modelo ativo.
 `_model/` guarda cada treino e seu mapa; `_qc/` guarda cada relatório.
 
-O cadastro é **por participante e sessão**: `session.json` preserva os campos
-mesmo se uma planilha estiver aberta; `sessions.csv` reúne uma linha por sessão.
-Uma nova sessão pré-preenche os dados do participante, com a data de hoje. Confira
-a data, a touca e o experimentador/a; mudanças não alteram sessões anteriores.
+O cadastro permanente fica em `GRUPO/CÓDIGO/subject.json`. `sujeitos.csv` é sua
+tabela geral, com cabeçalhos em português. O código seleciona a pasta do sujeito;
+um mesmo código em outro grupo tem cadastro independente. Cadastrar um sujeito
+não exige iniciar uma sessão. Uma nova sessão pré-preenche os dados cadastrados
+e a data de hoje. Cada `session.json` guarda a identificação, a data e o nome do
+experimentador/a. O JSON junto a cada sinal preserva os dados daquele registro,
+mesmo que o cadastro seja atualizado posteriormente.
+
+**Os arquivos são a fonte dos dados; as tabelas são reconstruíveis.**
 O botão **Atualizar tabelas com os dados existentes** recompõe as tabelas a partir
-dos arquivos da pasta e completa participante, sessão, tipo de bloco e data quando
+dos arquivos existentes e completa participante, sessão, tipo de bloco e data quando
 esses dados estão disponíveis. Grupos antigos desconhecidos ficam `UNASSIGNED`
-até serem cadastrados. A leitura de dados e modelos aceita também a organização
-antiga, sem mover ou renomear os arquivos.
+até serem cadastrados. A leitura aceita também a organização antiga, sem mover
+ou renomear os arquivos.
+
+`dados.csv` apresenta os blocos com cabeçalhos em português, identificação,
+horários, estado, CV em porcentagem, tamanho, caminhos e comentários. O resumo
+da interface é atualizado ao abrir ou retornar à tela, sem ler as amostras EEG
+nem refazer a análise. Ao excluir um sinal, sua linha é removida na próxima
+atualização. Ao mover um bloco dentro da pasta de dados, os caminhos são refeitos.
+Para manter todas as informações ao transportar dados, mova **a pasta completa
+do bloco, incluindo CSVs, JSONs, `_qc` e `_model`**. Cada sessão recebe também um
+`session.txt` legível, com identificação, sequência cronológica dos blocos,
+horários, estado, CV, caminhos e comentários. Esse texto é um resumo gerado;
+edite as anotações pela interface, que atualiza os JSONs de origem.
 
 `dataset_index.csv` reúne uma linha por bloco, com cadastro, comentário, condição
 de feedback, caminhos relativos, tamanho do sinal em bytes/MiB, horários e estado
@@ -455,15 +485,18 @@ de conclusão. `status=partial` identifica interrupção; `interrupt_reason` inf
 o motivo. Arquivos antigos sem essa informação ficam `unknown`: tamanho pequeno
 sozinho não prova uma interrupção. Os campos de análise da tabela existente
 (`include`, `bad_channels`, `exclude_trials`, `reason`, `train_run_id` e colunas
-adicionais) são preservados nas atualizações. `reason` continua reservado à
+adicionais) são preservados nas atualizações e copiados para o JSON do sinal,
+permitindo reconstruir o índice mesmo após apagar os CSVs centrais. `reason` continua reservado à
 curadoria; `comment` contém as anotações do experimentador/a.
 
 O índice inclui `cv_accuracy`, `cv_std`, `cv_balanced_accuracy`, `cv_trial_accuracy`,
 `cv_splits`, `cv_status` e `evaluation_error`, recuperados do `quality.json` do
-bloco. As acurácias são frações de 0 a 1 no CSV e porcentagens na interface.
-`sessions.csv` mantém o cadastro por sessão; `dataset_index.csv` guarda os resultados
-e comentários de cada bloco. O resumo final atualiza apenas os blocos da sessão
-selecionada e preserva os campos de curadoria dos demais registros.
+bloco. As acurácias são frações de 0 a 1 em `dataset_index.csv` e porcentagens em
+`dados.csv` e na interface. `sessions.csv` e `dataset_index.csv` mantêm os nomes
+técnicos de colunas usados pelas análises existentes. Os quatro CSVs centrais
+podem ser regenerados dos JSONs e sinais; eles não são o único backup dos
+comentários, cadastro, curadoria ou resultados de CV. A atualização percorre
+os metadados de toda a pasta, e o resumo mostra somente a sessão selecionada.
 
 As anotações são salvas também no JSON do sinal, no `quality.json` e no relatório
 HTML, sem refazer treino ou figuras. As análises carregam o cadastro da sessão

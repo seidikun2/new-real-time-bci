@@ -17,6 +17,8 @@ from .catalog import (
     read_json,
     settings_path,
     read_sessions,
+    read_subjects,
+    save_subject,
     session_defaults,
     save_session,
     save_preferences,
@@ -41,12 +43,14 @@ class Operator:
         self.root = tk.Tk()
         self.root.title('BCI · condução experimental')
         width, height = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
-        self.root.geometry(f'{min(1240, width-80)}x{min(900, height-100)}')
+        self.root.geometry(f'{min(1480, width-40)}x{height-70}')
         self.root.minsize(min(900, width-40), min(620, height-80))
         family = 'Segoe UI' if 'Segoe UI' in font.families(self.root) else font.nametofont('TkDefaultFont').actual('family')
         style = ttk.Style(self.root)
         style.theme_use('clam')
-        style.configure('.', font=(family, 11))
+        font.nametofont('TkDefaultFont').configure(family=family, size=13)
+        font.nametofont('TkTextFont').configure(family=family, size=13)
+        style.configure('.', font=(family, 13))
         style.configure('TFrame', background=PALETTE['background'])
         style.configure('TLabel', background=PALETTE['background'], foreground=PALETTE['ink'])
         available_fonts = {name.lower() for name in font.families(self.root)}
@@ -73,7 +77,7 @@ class Operator:
         style.configure('TEntry', padding=8)
         style.configure('TCombobox', padding=7)
         style.map('TCombobox', fieldbackground=[('readonly', PALETTE['paper'])])
-        style.configure('Treeview', rowheight=34)
+        style.configure('Treeview', rowheight=40)
         style.configure('TNotebook', background=PALETTE['background'], borderwidth=0)
         style.configure(
             'TNotebook.Tab',
@@ -95,7 +99,12 @@ class Operator:
             fieldbackground=PALETTE['paper'],
             foreground=PALETTE['ink'],
         )
-        style.configure('Treeview.Heading', background=PALETTE['sand'], foreground=PALETTE['ink'])
+        style.configure(
+            'Treeview.Heading',
+            background=PALETTE['sand'],
+            foreground=PALETTE['ink'],
+            font=(family, 13, 'bold'),
+        )
         style.configure(
             'TButton',
             background=PALETTE['paper'],
@@ -118,7 +127,7 @@ class Operator:
         style.configure(
             'Link.TButton',
             foreground=PALETTE['accent'],
-            font=(family, 11, 'underline'),
+            font=(family, 13, 'underline'),
             padding=(0, 4),
             background=PALETTE['background'],
         )
@@ -150,6 +159,8 @@ class Operator:
         self.buttons.pack(side='bottom', fill='x', pady=(14, 0))
         self.body = ttk.Frame(self.shell)
         self.body.pack(fill='both', expand=True)
+        self.note.trace_add('write', self.refresh_note)
+        self.refresh_note()
         self.action = tk.StringVar()
         self.closing = self.cancelled = False
         self.report_path = None
@@ -166,21 +177,21 @@ class Operator:
         if self.summary is not None:
             self.summary.flush()
         if getattr(self, '_registration_dirty', False):
-            self.save_registration()
+            self.save_pending_registration()
         self.closing = self.cancelled = True
         self.note.set('Encerrando a sessão. A gravação será salva; aguarde a operação atual terminar.')
         self.action.set('stop')
 
     def page(self, title, subtitle=''):
         if self.summary is not None:
-            self.summary.flush()
+            self.summary.close()
             self.summary = None
         self.comment_widget = None
         self.title.set(title)
         self.subtitle.set(subtitle)
         self.parameters.pack(side='right')
         self.steps_label.pack(anchor='w', pady=(14, 10), before=self.title_label)
-        self.note_label.pack(anchor='w', pady=(0, 10), before=self.body)
+        self.refresh_note()
         for container in (self.body, self.buttons):
             for widget in container.winfo_children():
                 widget.destroy()
@@ -204,9 +215,17 @@ class Operator:
         self.note.set(text)
         self.root.update_idletasks()
 
+    def refresh_note(self, *_):
+        if self.note.get():
+            self.note_label.pack(anchor='w', pady=(0, 10), before=self.body)
+        else:
+            self.note_label.pack_forget()
+
     def configure(self, cfg, acquisition_duration=None):
         self.cfg = cfg
         self._registration_dirty = False
+        self._subject_dirty = False
+        self._session_dirty = False
         self._registration_after = None
         self._loaded_identity = None
         self._catalog_root = None
@@ -215,6 +234,7 @@ class Operator:
         default_root = str(Path(DEFAULT_DATA_ROOT).expanduser().resolve())
         use_preferences = preferences.get('data_root') and configured_root in {
             default_root,
+            str((Path.home() / 'Área de trabalho' / 'BCI_Dados').resolve()),
             preferences['data_root'],
         }
         root_value = preferences['data_root'] if use_preferences else configured_root
@@ -237,6 +257,7 @@ class Operator:
             'Preparar sessão',
             'Selecione grupo, participante e sessão. O cadastro salvo é carregado automaticamente.',
         )
+        self.steps_label.pack_forget()
         if acquisition_duration is not None:
             self.title.set(f'Verificar aquisição · {acquisition_duration/60:g} min')
             self.subtitle.set('Escolha a aquisição e a pasta dos dados. Este teste não exige Unity nem modelo.')
@@ -246,7 +267,7 @@ class Operator:
 
         def field(parent, label, key, value, row, column, choices=None, editable=False):
             cell = self.ttk.Frame(parent)
-            cell.grid(row=row, column=column, sticky='ew', padx=(0, 16), pady=7)
+            cell.grid(row=row, column=column, sticky='ew', padx=(0, 16), pady=5)
             self.ttk.Label(cell, text=label).pack(anchor='w', pady=(0, 5))
             variable = self.tk.StringVar(value=value)
             widget = (
@@ -274,9 +295,11 @@ class Operator:
         self.configuration_tabs = self.ttk.Notebook(body)
         self.configuration_tabs.pack(fill='both', expand=True)
         collection = self.ttk.Frame(self.configuration_tabs, padding=14)
-        registration = self.ttk.Frame(self.configuration_tabs, padding=14)
+        registration = self.ttk.Frame(self.configuration_tabs, padding=10)
         self.configuration_tabs.add(collection, text='Coleta')
-        self.configuration_tabs.add(registration, text='Cadastro da sessão')
+        self.configuration_tabs.add(registration, text='Cadastro do sujeito')
+        session_form = self.ttk.Frame(self.configuration_tabs, padding=14)
+        self.configuration_tabs.add(session_form, text='Dados da sessão')
         field(
             collection,
             'Aquisição',
@@ -315,7 +338,7 @@ class Operator:
         ).grid(row=2, columnspan=2, sticky='w', pady=12)
         self.ttk.Button(
             collection,
-            text='Editar cadastro da sessão',
+            text='Cadastrar / editar sujeito',
             command=lambda: self.configuration_tabs.select(registration),
         ).grid(row=3, column=0, sticky='w')
         field(registration, 'Touca', 'cap', '', 0, 0)
@@ -338,22 +361,25 @@ class Operator:
             1,
             ['Não informado', 'Feminino', 'Masculino', 'Outro'],
         )
-        field(registration, 'Data da coleta', 'collection_date', '', 2, 0)
-        field(registration, 'Experimentador/a · nome', 'experimenter', '', 2, 1)
+        field(session_form, 'Data da coleta', 'collection_date', '', 0, 0)
+        field(session_form, 'Experimentador/a · nome', 'experimenter', '', 0, 1)
         self.ttk.Label(
             registration,
-            text='Salvo automaticamente após editar. Em nova sessão, confira data e experimentador/a.\nA lateralidade define diretamente a perna usada na etapa de uma perna.',
+            text='Cadastro permanente por grupo e código; a lateralidade define a perna de controle.',
             wraplength=850,
             style='Muted.TLabel',
         ).grid(row=3, columnspan=2, sticky='w', pady=12)
         self.ttk.Button(
-            registration, text='Salvar cadastro', command=lambda: self.save_registration(force=True)
+            registration, text='Salvar cadastro do sujeito', command=self.save_subject_registration
         ).grid(row=4, column=0, sticky='w')
+        self.ttk.Button(registration, text='Abrir cadastro geral', command=self.open_subjects).grid(
+            row=4, column=1, sticky='e'
+        )
         self.ttk.Button(
-            registration,
+            session_form,
             text='Atualizar tabelas com os dados existentes',
             command=lambda: self.load_registration(refresh=True),
-        ).grid(row=4, column=1, sticky='e')
+        ).grid(row=1, column=0, sticky='w', pady=12)
         for widget in [group_widget, self.subject_selector, session_widget, folder_entry]:
             widget.bind('<FocusOut>', lambda event: self.load_registration())
             widget.bind('<Return>', lambda event: self.load_registration())
@@ -361,7 +387,7 @@ class Operator:
         self.subject_selector.bind('<<ComboboxSelected>>', lambda event: self.load_registration())
         self._loading_registration = False
         for key in ['cap', 'age', 'sex', 'laterality', 'collection_date', 'experimenter']:
-            self.fields[key].trace_add('write', self.registration_changed)
+            self.fields[key].trace_add('write', lambda *_, key=key: self.registration_changed(key))
         self.load_registration(refresh=True)
         self.button('Preparar protocolo', 'prepare', True)
         self.button('Encerrar', 'stop', side='left')
@@ -391,7 +417,7 @@ class Operator:
             except (ValueError, TypeError, StopIteration, OSError) as exc:
                 self.notify(f'Confira os campos: {exc}')
         if self._registration_dirty:
-            self.save_registration()
+            self.save_pending_registration()
         return False
 
     def registration_identity(self):
@@ -410,18 +436,26 @@ class Operator:
             if identity == self._loaded_identity and not refresh:
                 return
             if self._registration_dirty and self._loaded_identity:
-                self.save_registration(identity=self._loaded_identity)
+                self.save_pending_registration(identity=self._loaded_identity)
             root, group, subject, session = identity
             if Path(root).is_dir() and (refresh or self._catalog_root != root):
                 refresh_catalog(root)
                 self._catalog_root = root
-            rows = read_sessions(root)
+            rows = read_subjects(root)
             self.subject_selector.configure(
                 values=sorted(
                     {r['subject'] for r in rows if r.get('group') in {group, '', 'UNASSIGNED'}}
                 )
             )
             record = session_defaults(root, group, subject, session)
+            profile = next(
+                (r for r in rows if r['subject'] == subject and r.get('group') == group), {}
+            )
+            record.update(
+                {key: profile[key] for key in ['cap', 'age', 'sex', 'laterality'] if key in profile}
+            )
+            self._subject_dirty = False
+            self._session_dirty = False
             self._loading_registration = True
             for key in ['cap', 'age', 'experimenter']:
                 self.fields[key].set(record.get(key, ''))
@@ -454,13 +488,55 @@ class Operator:
         finally:
             self._loading_registration = False
 
-    def registration_changed(self, *_):
+    def registration_changed(self, key=None, *_):
         if self._loading_registration:
             return
         self._registration_dirty = True
+        if key in {'cap', 'age', 'sex', 'laterality'}:
+            self._subject_dirty = True
+        else:
+            self._session_dirty = True
         if self._registration_after is not None:
             self.root.after_cancel(self._registration_after)
-        self._registration_after = self.root.after(600, self.save_registration)
+        self._registration_after = self.root.after(600, self.save_pending_registration)
+
+    def save_pending_registration(self, identity=None):
+        if self._session_dirty:
+            return self.save_registration(identity=identity)
+        if self._subject_dirty:
+            return self.save_subject_registration(identity=identity)
+
+    def save_subject_registration(self, identity=None):
+        if self._registration_after is not None:
+            self.root.after_cancel(self._registration_after)
+            self._registration_after = None
+        try:
+            root = (
+                external_path(self.fields['data_root'].get()) if identity is None else identity[0]
+            )
+            group = self.fields['group'].get() if identity is None else identity[1]
+            subject = self.fields['subject'].get().strip() if identity is None else identity[2]
+            prepare_data_root(root)
+            record = dict(
+                group=group,
+                subject=subject,
+                cap=self.fields['cap'].get(),
+                age=self.fields['age'].get(),
+                sex={'Feminino': 'F', 'Masculino': 'M', 'Não informado': ''}.get(
+                    self.fields['sex'].get(), self.fields['sex'].get()
+                ),
+                laterality='left' if self.fields['laterality'].get() == 'Esquerda' else 'right',
+            )
+            saved = save_subject(root, record)
+            self._subject_dirty = False
+            self._registration_dirty = self._session_dirty
+            self.registration_status.set(
+                saved.get('_warning') or f'Sujeito cadastrado · {group} / {subject}'
+            )
+            return saved
+        except (OSError, ValueError) as exc:
+            self.registration_status.set(f'Cadastro do sujeito não salvo: {exc}')
+            return None
 
     def save_registration(self, force=False, identity=None):
         if self._registration_after is not None:
@@ -492,12 +568,16 @@ class Operator:
                 collection_date=collected.isoformat(),
                 experimenter=self.fields['experimenter'].get(),
             )
+            if self._subject_dirty:
+                save_subject(root, record)
+                self._subject_dirty = False
             saved = save_session(root, record)
             try:
                 save_preferences(root, group, subject, session)
             except OSError:
                 pass  # O cadastro principal já está preservado na pasta de dados.
             self._registration_dirty = False
+            self._session_dirty = False
             self._loaded_identity = (root, group, subject, session)
             self.registration_status.set(
                 saved.get('_warning')
@@ -507,6 +587,18 @@ class Operator:
         except (ValueError, OSError, csv.Error) as exc:
             self.registration_status.set(f'Cadastro não salvo: {exc}')
             return None
+
+    def open_subjects(self):
+        from .session_summary import open_path
+        from .catalog import export_subjects
+
+        try:
+            root = external_path(self.fields['data_root'].get())
+            self.save_subject_registration()
+            export_subjects(root)
+            open_path(root / 'sujeitos.csv')
+        except (OSError, ValueError) as exc:
+            self.notify(str(exc))
 
     def choose_data_root(self, variable):
         selected = self.filedialog.askdirectory(title='Pasta dos dados da sessão', parent=self.root,
@@ -644,7 +736,7 @@ class Operator:
         self.preview_tabs = self.ttk.Notebook(self.body)
         self.preview_tabs.pack(fill='both', expand=True)
         signal_tab = self.ttk.Frame(self.preview_tabs)
-        self.preview_tabs.add(signal_tab, text='Snapshot do sinal')
+        self.preview_tabs.add(signal_tab, text='Sinal EEG')
         self.signal_preview = SignalPreview(signal_tab)
         timing_tab = self.ttk.Frame(self.preview_tabs)
         self.preview_tabs.add(timing_tab, text='Sincronização')
@@ -664,7 +756,9 @@ class Operator:
             self.live_canvas.pack(fill='both', expand=True)
             self.live_canvas.bind('<Configure>', lambda event: self.resize_live_pca())
             self.live_dot = self.live_canvas.create_oval(0, 0, 0, 0, fill='#173c72', outline='white', width=2)
-            self.live_probabilities = self.tk.StringVar(value='Probabilidades: aguardando decoder')
+            self.live_probabilities = self.tk.StringVar(
+                value='Probabilidades: aguardando classificador'
+            )
             self.ttk.Label(pca_tab, text='PCA · experimentador', style='Muted.TLabel').pack()
             self.ttk.Label(pca_tab, textvariable=self.live_probabilities).pack(pady=6)
         self.root.update_idletasks()
@@ -696,8 +790,16 @@ class Operator:
         self.root.bell()
 
     def set_event(self, label):
-        labels = {'BASELINE': 'Baseline', 'ATTENTION': 'Atenção', 'LEFT_MI_STIM': 'Esquerda', 'RIGHT_MI_STIM': 'Direita',
-                  'REST_STIM': 'Repouso · estímulo', 'ATTEMPT': 'Tentativa', 'REST': 'Pausa', 'BLOCK_END': 'Bloco concluído'}
+        labels = {
+            'BASELINE': 'Repouso inicial',
+            'ATTENTION': 'Atenção',
+            'LEFT_MI_STIM': 'Esquerda',
+            'RIGHT_MI_STIM': 'Direita',
+            'REST_STIM': 'Repouso · estímulo',
+            'ATTEMPT': 'Tentativa',
+            'REST': 'Pausa',
+            'BLOCK_END': 'Bloco concluído',
+        }
         self.event.set(labels.get(label, label))
 
     def poll_block(self, text):
@@ -731,7 +833,9 @@ class Operator:
             try:
                 self.signal_preview.update(snapshot)
             except (ValueError, IndexError, self.tk.TclError):
-                self.signal_preview.caption.set('Snapshot indisponível. A gravação continua; confira o relatório.')
+                self.signal_preview.caption.set(
+                    'Prévia do sinal indisponível. A gravação continua; confira o relatório.'
+                )
 
     def update_timing_preview(self, data):
         if self.timing_preview is not None:
@@ -796,10 +900,21 @@ class Operator:
             raise value
         return value
 
-    def add_image(self, parent, filename):
+    def add_image(self, parent, filename, expandable=True):
         if not filename or not Path(filename).exists():
             self.ttk.Label(parent, text='Figura indisponível para este bloco.').pack(pady=20)
             return
+        if expandable:
+
+            def enlarge():
+                window = self.tk.Toplevel(parent)
+                window.title('Figura ampliada')
+                window.geometry(
+                    f'{min(1500, self.root.winfo_screenwidth()-40)}x{self.root.winfo_screenheight()-80}'
+                )
+                self.add_image(window, filename, expandable=False)
+
+            self.ttk.Button(parent, text='Ampliar figura', command=enlarge).pack(anchor='e')
         from PIL import Image, ImageTk
         with Image.open(filename) as source:
             original = source.convert('RGB')
@@ -839,9 +954,10 @@ class Operator:
         if qc.get('issues'):
             messages.append(f"Qualidade: {len(qc['issues'])} ponto(s) de atenção. Consulte o relatório.")
         self.ttk.Label(self.body, text='\n'.join(messages), wraplength=950).pack(anchor='w', pady=5)
+        tabs = self.ttk.Notebook(self.body)
+        tabs.pack(fill='both', expand=True)
         if not resting and block.get('signal_file'):
-            note = self.ttk.Frame(self.body)
-            note.pack(fill='x', pady=(4, 10))
+            note = self.ttk.Frame(tabs, padding=12)
             self.ttk.Label(note, text='Anotações do bloco · opcional').pack(anchor='w', pady=(0, 4))
             self.comment_status = self.tk.StringVar(
                 value='Salvo automaticamente nos dados e na tabela.'
@@ -861,7 +977,7 @@ class Operator:
                 pady=8,
                 undo=True,
             )
-            self.comment_widget.pack(fill='x')
+            self.comment_widget.pack(fill='both', expand=True)
             self._comment_saved = context_for_signal(
                 self.comment_signal, self.cfg.experiment.log_root
             ).get('comment', '')
@@ -871,10 +987,8 @@ class Operator:
             self.ttk.Label(note, textvariable=self.comment_status, style='Muted.TLabel').pack(
                 anchor='w'
             )
-        tabs = self.ttk.Notebook(self.body)
-        tabs.pack(fill='both', expand=True)
         signal_tab = self.ttk.Frame(tabs)
-        tabs.add(signal_tab, text='Snapshot do sinal')
+        tabs.add(signal_tab, text='Sinal EEG')
         self.signal_preview = SignalPreview(signal_tab)
         snapshot_file = qc.get('snapshot_file')
         if snapshot_file and Path(snapshot_file).exists():
@@ -883,9 +997,13 @@ class Operator:
                 with np.load(snapshot_file, allow_pickle=False) as snapshot:
                     self.update_signal_preview({key: snapshot[key] for key in ['times', 'values', 'channels']})
             except (OSError, ValueError, KeyError):
-                self.signal_preview.caption.set('Snapshot indisponível; consulte o relatório completo.')
+                self.signal_preview.caption.set(
+                    'Prévia do sinal indisponível; consulte o relatório completo.'
+                )
         else:
-            self.signal_preview.caption.set('Sem sinal suficiente para gerar um snapshot deste bloco.')
+            self.signal_preview.caption.set(
+                'Sem sinal suficiente para gerar uma prévia deste bloco.'
+            )
         figures = [('PCA', evaluation.get('pca_check_png')),
                    ('Matriz de confusão', str(Path(self.report_path).with_name('confusion_matrix.png')) if self.report_path else None)]
         for title, filename in ([] if inspection_only else figures):
@@ -908,6 +1026,8 @@ class Operator:
                                             health=audit.get('current_health', {'reason':'Sem série temporal neste registro.'})))
             if diagnostic:
                 tabs.select(timing_tab)
+        if not resting and block.get('signal_file'):
+            tabs.add(note, text='Anotações do bloco')
         self.button('Encerrar teste' if diagnostic else 'Próximo bloco', 'next', True)
         self.button('Repetir bloco', 'repeat')
         if self.model_ref:
@@ -993,9 +1113,9 @@ class Operator:
         try:
             self.flush_comment()
             if self.summary is not None:
-                self.summary.flush()
+                self.summary.close()
             if getattr(self, '_registration_dirty', False):
-                self.save_registration()
+                self.save_pending_registration()
             self.root.destroy()
         except self.tk.TclError:
             pass

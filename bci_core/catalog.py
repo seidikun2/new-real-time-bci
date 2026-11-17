@@ -1,4 +1,4 @@
-"""Cadastro por sessão e índice portátil dos blocos, dentro da pasta de dados."""
+"""Cadastros e tabelas reconstruíveis a partir dos arquivos da pasta de dados."""
 
 import csv
 import json
@@ -75,6 +75,8 @@ INDEX_FIELDS = [
     'evaluation_error',
 ]
 LOCK = threading.RLock()
+SUBJECT_FIELDS = ['group', 'subject', 'cap', 'age', 'sex', 'laterality', 'updated_at']
+CURATION_FIELDS = {'run_id', 'include', 'bad_channels', 'exclude_trials', 'reason', 'train_run_id'}
 
 
 def read_json(path):
@@ -136,13 +138,77 @@ def session_key(row):
 def read_sessions(data_root):
     root = external_path(data_root)
     _, rows = read_table(root / 'sessions.csv')
-    records = {session_key(row): row for row in rows if row.get('subject') and row.get('session')}
+    records = {}
+    for row in rows:
+        if row.get('subject') and row.get('session'):
+            paths = [
+                root / row.get('group', '') / row['subject'] / session_id(row['session']),
+                root / row['subject'] / session_id(row['session']),
+            ]
+            if any(path.is_dir() for path in paths):
+                records[session_key(row)] = row
     for path in root.glob('*/*/S*/session.json'):
         if path.resolve().is_relative_to(root):
             row = read_json(path)
             if row.get('subject') and row.get('session'):
                 records[session_key(row)] = row
     return list(records.values())
+
+
+def read_subjects(data_root):
+    root = external_path(data_root)
+    records = {}
+    for session in sorted(read_sessions(root), key=lambda row: row.get('updated_at', '')):
+        if session.get('group') in GROUPS:
+            records[(session['group'], session['subject'])] = {
+                key: session.get(key, '') for key in SUBJECT_FIELDS
+            }
+    for path in root.glob('*/*/subject.json'):
+        if path.resolve().is_relative_to(root):
+            row = read_json(path)
+            if row.get('group') in GROUPS and row.get('subject'):
+                records[(row['group'], row['subject'])] = row
+    return list(records.values())
+
+
+def export_subjects(data_root):
+    labels = {
+        'group': 'Grupo',
+        'subject': 'Código',
+        'cap': 'Touca',
+        'age': 'Idade',
+        'sex': 'Sexo',
+        'laterality': 'Perna de controle',
+        'updated_at': 'Atualizado em',
+    }
+    subjects = read_subjects(data_root)
+    for subject in subjects:
+        target = (
+            session_path(data_root, subject['group'], subject['subject'], 1).parent / 'subject.json'
+        )
+        if not target.exists():
+            write_json(target, subject)
+    rows = [{label: row.get(key, '') for key, label in labels.items()} for row in subjects]
+    for row in rows:
+        row['Perna de controle'] = {'left': 'Esquerda', 'right': 'Direita'}.get(
+            row['Perna de controle'], ''
+        )
+    write_table(external_path(data_root) / 'sujeitos.csv', list(labels.values()), rows)
+
+
+def save_subject(data_root, record):
+    row = {key: str(record.get(key, '')).strip() for key in SUBJECT_FIELDS}
+    if row['laterality'] not in {'left', 'right'}:
+        raise ValueError('Escolha a perna de controle.')
+    row['updated_at'] = datetime.now().astimezone().isoformat()
+    folder = session_path(data_root, row['group'], row['subject'], 1).parent
+    with LOCK:
+        write_json(folder / 'subject.json', row)
+        try:
+            export_subjects(data_root)
+        except OSError as exc:
+            row['_warning'] = f'Sujeito salvo; exportação da tabela pendente: {exc}'
+    return row
 
 
 def session_defaults(data_root, group, subject, session):
@@ -165,6 +231,15 @@ def session_defaults(data_root, group, subject, session):
         )
     if not exact:
         row.update(collection_date=date.today().isoformat(), registered='0')
+        profile = next(
+            (
+                r
+                for r in read_subjects(data_root)
+                if r['group'] == group and r['subject'] == subject
+            ),
+            {},
+        )
+        row.update({key: value for key, value in profile.items() if key in SUBJECT_FIELDS})
     row.update(group=group, subject=subject, session=session_id(session))
     return row
 
@@ -182,6 +257,9 @@ def save_session(data_root, record):
     )
     with LOCK:
         write_json(path, record)  # O cadastro persiste mesmo se a planilha estiver aberta no Excel.
+        subject_file = path.parent.parent / 'subject.json'
+        if not subject_file.exists():
+            save_subject(root, record)
         rows = [
             r
             for r in read_sessions(root)
@@ -281,7 +359,13 @@ def context_for_signal(signal, data_root=None, sessions=None, index_row=None):
     original = metadata.get('effective_config', {}).get('experiment') or metadata.get(
         'config', {}
     ).get('experiment', {})
-    identity = path_identity(signal, root)
+    original = dict(original)
+    for key, value in metadata.get('participant_snapshot', {}).items():
+        if key not in original or (
+            key in {'cap', 'collection_date', 'experimenter'} and not original.get(key)
+        ):
+            original[key] = value
+    identity = {**metadata.get('recording_identity', {}), **path_identity(signal, root)}
     context = dict(identity)
     context.update(
         {
@@ -335,11 +419,18 @@ def context_for_signal(signal, data_root=None, sessions=None, index_row=None):
                 key: chosen[0].get(key, '')
                 for key in SESSION_FIELDS
                 if key not in {'subject', 'session'}
+                and (
+                    key not in original
+                    or (key in {'cap', 'collection_date', 'experimenter'} and not original.get(key))
+                )
             }
         )
     context.setdefault(
         'laterality', metadata.get('config', {}).get('protocol', {}).get('online_target', '')
     )
+    protocol = metadata.get('config', {}).get('protocol', {})
+    if protocol.get('stage') != 'two_legs' and protocol.get('online_target') in {'left', 'right'}:
+        context['laterality'] = protocol['online_target']
     file_stamp = metadata.get('comment_updated_at', '')
     table_stamp = index_row.get('comment_updated_at', '') or ''
     context['comment'] = (
@@ -349,19 +440,21 @@ def context_for_signal(signal, data_root=None, sessions=None, index_row=None):
     )
     context['comment_updated_at'] = max(file_stamp, table_stamp)
     match = re.search(r'_S\d+_(.+)_(train|online|resting|diagnostic)_signal_', signal.stem)
-    context['block'] = canonical_block(original.get('session_type') or (match[1] if match else ''))
-    context['mode'] = metadata.get('mode') or (match[2] if match else '')
-    context['stage'] = metadata.get('config', {}).get('protocol', {}).get('stage') or index_row.get(
-        'stage', ''
+    context['block'] = canonical_block(
+        original.get('session_type') or (match[1] if match else identity.get('block', ''))
     )
+    context['mode'] = metadata.get('mode') or (match[2] if match else '')
+    context['stage'] = protocol.get('stage') or identity.get('stage') or index_row.get('stage', '')
     return context
 
 
 def recording_row(signal, root, previous, sessions):
     signal = Path(signal)
-    row = dict(previous)
-    context = context_for_signal(signal, root, sessions, previous)
     metadata = read_json(signal.with_suffix('.json'))
+    row = dict(metadata.get('catalog', {}))
+    row.update(metadata.get('evaluation_summary', {}))
+    row.update(previous)
+    context = context_for_signal(signal, root, sessions, previous)
     original = metadata.get('effective_config', {}).get('experiment') or metadata.get(
         'config', {}
     ).get('experiment', {})
@@ -419,9 +512,7 @@ def recording_row(signal, root, previous, sessions):
     row.setdefault(
         'include', '1'
     )  # Curadoria é preservada; complete/status informam a integridade.
-    row['stage'] = metadata.get('config', {}).get('protocol', {}).get('stage') or row.get(
-        'stage', ''
-    )
+    row['stage'] = context['stage'] or row.get('stage', '')
     row['collection_date'] = row.get('collection_date') or (
         f'{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]}' if stamp else ''
     )
@@ -451,50 +542,150 @@ def recording_row(signal, root, previous, sessions):
 
 
 def session_recordings(cfg):
-    """Atualiza só os blocos desta sessão, sem ler EEG nem refazer análises."""
+    """O resumo consulta os arquivos atuais, inclusive após mover ou excluir dados."""
     exp = cfg.experiment
-    root = external_path(exp.log_root)
-    selected_session = session_id(exp.session_id)
-
-    def belongs(row):
-        return (
-            row.get('subject') == exp.subject_id
-            and row.get('session') == selected_session
-            and row.get('group') in {exp.group, '', 'UNASSIGNED'}
-        )
-
-    with LOCK:
-        fields, rows = read_table(root / 'dataset_index.csv')
-        previous = {r.get('signal_path', '').replace('\\', '/'): r for r in rows}
-        paths = {root / key for key, row in previous.items() if key and belongs(row)}
-        for folder in session_roots(cfg):
-            paths.update(
-                p
-                for p in folder.rglob('*_signal_*.csv')
-                if not {'_qc', '_model'}.intersection(p.parts)
-            )
-        sessions = read_sessions(root)
-        current = []
-        for signal in sorted(paths):
-            if not signal.resolve().is_relative_to(root):
-                continue
-            key = relative_path(signal, root)
-            row = recording_row(signal, root, previous.get(key, {}), sessions)
-            if belongs(row):
-                current.append(row)
-                previous[key] = row
+    try:
+        rows = refresh_catalog(exp.log_root)
         warning = ''
-        if current:
-            try:
-                write_table(
-                    root / 'dataset_index.csv', [*fields, *INDEX_FIELDS], list(previous.values())
-                )
-            except (OSError, csv.Error) as exc:
-                warning = f'Resumo carregado; atualização da tabela pendente: {exc}'
+    except OSError as exc:
+        _, rows = read_table(external_path(exp.log_root) / 'dataset_index.csv')
+        rows = [
+            r for r in rows if (external_path(exp.log_root) / r.get('signal_path', '')).is_file()
+        ]
+        warning = f'Tabela não atualizada: {exc}'
     return (
-        sorted(current, key=lambda row: (row.get('stamp', ''), row.get('signal_path', ''))),
+        [
+            r
+            for r in sorted(rows, key=lambda row: row.get('stamp') or row.get('started_at', ''))
+            if r.get('subject') == exp.subject_id
+            and r.get('session') == session_id(exp.session_id)
+            and r.get('group') in {exp.group, '', 'UNASSIGNED'}
+        ],
         warning,
     )
+
+
+def persist_recording(signal, row):
+    """Notas e curadoria acompanham o EEG; o CSV pode ser apagado e reconstruído."""
+    path = Path(signal).with_suffix('.json')
+    try:
+        metadata = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+    except (OSError, ValueError):
+        return  # Não substitui metadados corrompidos.
+    if not isinstance(metadata, dict):
+        return
+    old = dict(metadata)
+    metadata['catalog'] = {
+        key: value
+        for key, value in row.items()
+        if key in CURATION_FIELDS or key not in INDEX_FIELDS
+    }
+    metadata['recording_identity'] = {
+        key: row.get(key, '') for key in ['group', 'subject', 'session', 'block', 'stage']
+    }
+    metadata.setdefault('participant_snapshot', {key: row.get(key, '') for key in SESSION_FIELDS})
+    metadata['evaluation_summary'] = {
+        key: row.get(key, '')
+        for key in INDEX_FIELDS
+        if key.startswith('cv_') or key == 'evaluation_error'
+    }
+    if row.get('comment') and not metadata.get('comment'):
+        metadata.update(
+            comment=row['comment'],
+            comment_updated_at=row.get('comment_updated_at')
+            or datetime.now().astimezone().isoformat(),
+        )
+    if metadata != old:
+        write_json(path, metadata)
+
+
+def export_session_text(root, records, recordings):
+    for record in records:
+        if record.get('group') not in GROUPS:
+            continue
+        folder = session_path(
+            root, record['group'], record['subject'], session_id(record['session'])[1:]
+        )
+        if not folder.is_dir():
+            continue
+        blocks = [r for r in recordings if session_key(r) == session_key(record)]
+        lines = [
+            'RESUMO DA SESSÃO — gerado a partir dos arquivos',
+            f"Grupo: {record['group']} | Sujeito: {record['subject']} | Sessão: {record['session']}",
+            f"Data: {record.get('collection_date', '')} | Experimentador/a: {record.get('experimenter', '')}",
+            'Edite as anotações pela interface; os JSON junto aos sinais são o registro original.',
+            '',
+        ]
+        for index, block in enumerate(sorted(blocks, key=lambda r: r.get('stamp', '')), 1):
+            state = {
+                'complete': 'Concluído',
+                'partial': 'Interrompido',
+                'unknown': 'Não confirmado',
+            }.get(block.get('status'), 'Indisponível')
+            try:
+                accuracy = f"{float(block['cv_accuracy']):.1%}"
+            except (ValueError, KeyError, TypeError):
+                accuracy = 'não disponível'
+            lines.extend(
+                [
+                    f"{index}. {block['block']} | {block.get('started_at') or block.get('stamp', '')}",
+                    f"Estado: {state} | CV: {accuracy}",
+                    f"Arquivo: {block['signal_path']}",
+                    f"Anotações: {block.get('comment') or 'Sem anotações.'}",
+                    '',
+                ]
+            )
+        text = '\n'.join(lines)
+        target = folder / 'session.txt'
+        if not target.exists() or target.read_text(encoding='utf-8') != text:
+            target.write_text(text, encoding='utf-8')
+
+
+def export_data_table(root, recordings):
+    labels = {
+        'group': 'Grupo',
+        'subject': 'Sujeito',
+        'session': 'Sessão',
+        'collection_date': 'Data da coleta',
+        'experimenter': 'Experimentador/a',
+        'cap': 'Touca',
+        'age': 'Idade',
+        'sex': 'Sexo',
+        'laterality': 'Perna de controle',
+        'block': 'Bloco',
+        'stage': 'Etapa',
+        'started_at': 'Início',
+        'ended_at': 'Fim',
+        'status': 'Estado',
+        'cv_accuracy': 'Acurácia CV',
+        'cv_std': 'Desvio CV',
+        'signal_mb': 'Tamanho (MiB)',
+        'signal_path': 'Sinal',
+        'marker_path': 'Marcadores',
+        'comment': 'Comentário',
+        'run_id': 'Identificador',
+    }
+    rows = []
+    for record in recordings:
+        row = {label: record.get(key, '') for key, label in labels.items()}
+        row['Estado'] = {
+            'complete': 'Concluído',
+            'partial': 'Interrompido',
+            'unknown': 'Não confirmado',
+        }.get(record.get('status'), 'Indisponível')
+        row['Etapa'] = {'single_target': 'Uma perna', 'two_legs': 'Duas pernas'}.get(
+            record.get('stage'), ''
+        )
+        row['Perna de controle'] = {'left': 'Esquerda', 'right': 'Direita'}.get(
+            record.get('laterality'), ''
+        )
+        for key in ['Acurácia CV', 'Desvio CV']:
+            try:
+                row[key] = f'{float(row[key]):.1%}'
+            except (TypeError, ValueError):
+                row[key] = ''
+        rows.append(row)
+    write_table(root / 'dados.csv', list(labels.values()), rows)
 
 
 def index_recording(signal, data_root=None):
@@ -517,7 +708,10 @@ def index_recording(signal, data_root=None):
                     row['train_run_id'] = candidates[0]['run_id']
         rows = [r for r in rows if r is not previous]
         rows.append(row)
+        persist_recording(signal, row)
         write_table(root / 'dataset_index.csv', [*fields, *INDEX_FIELDS], rows)
+        export_session_text(root, read_sessions(root), rows)
+        export_data_table(root, rows)
     return row
 
 
@@ -532,26 +726,46 @@ def refresh_catalog(data_root):
             for p in root.rglob('*_signal_*.csv')
             if p.resolve().is_relative_to(root) and not {'_qc', '_model'}.intersection(p.parts)
         }
-        for key in by_path:
-            path = Path(key)
-            candidate = path if path.is_absolute() else root / path
-            if candidate.resolve().is_relative_to(root):
-                paths.setdefault(key, candidate)
-        updated = [
-            recording_row(path, root, by_path.get(key, {}), sessions) for key, path in paths.items()
-        ]
-        updated.extend(
-            dict(row, available='0', status='missing')
-            for key, row in by_path.items()
-            if key not in paths
-        )
+        by_name = {}
+        for previous in rows:
+            by_name.setdefault(Path(previous.get('signal_path', '')).name, []).append(previous)
+        updated = []
+        for key, path in sorted(paths.items()):
+            previous = by_path.get(key)
+            if previous is None:
+                candidates = by_name.get(path.name, [])
+                previous = candidates[0] if len(candidates) == 1 else {}
+                old_signal = root / previous.get('signal_path', '')
+                old_meta = (
+                    read_json(old_signal.with_suffix('.json'))
+                    if old_signal.resolve().is_relative_to(root)
+                    else {}
+                )
+                if not path.with_suffix('.json').exists() and old_meta:
+                    write_json(path.with_suffix('.json'), old_meta)
+            row = recording_row(path, root, previous, sessions)
+            persist_recording(path, row)
+            updated.append(row)
         known = {session_key(r): r for r in sessions}
         for row in updated:
             if row.get('subject') and row.get('session') and session_key(row) not in known:
                 known[session_key(row)] = {key: row.get(key, '') for key in SESSION_FIELDS}
                 known[session_key(row)]['registered'] = '0'
+        for record in known.values():
+            if record.get('group') in GROUPS:
+                target = (
+                    session_path(
+                        root, record['group'], record['subject'], session_id(record['session'])[1:]
+                    )
+                    / 'session.json'
+                )
+                if not target.exists():
+                    write_json(target, record)
         write_table(root / 'sessions.csv', SESSION_FIELDS, list(known.values()))
         write_table(root / 'dataset_index.csv', [*fields, *INDEX_FIELDS], updated)
+        export_session_text(root, list(known.values()), updated)
+        export_subjects(root)
+        export_data_table(root, updated)
     return updated
 
 

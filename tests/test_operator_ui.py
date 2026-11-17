@@ -35,6 +35,120 @@ class PersistentOperatorTests(unittest.TestCase):
                 yield from children(child)
         self.assertFalse(any(w.winfo_class() == 'Toplevel' for w in children(self.op.root)))
 
+    def test_subject_registration_is_independent_of_session_and_reloads(self):
+        from bci_core.catalog import read_subjects
+
+        failures = []
+
+        def register():
+            try:
+                self.op.fields['subject'].set('P009')
+                self.op.load_registration()
+                self.op.fields['collection_date'].set('')
+                self.op.fields['cap'].set('M / 64 canais')
+                self.op.fields['laterality'].set('Esquerda')
+                record = self.op.save_subject_registration()
+                self.assertEqual(record['subject'], 'P009')
+                folder = Path(self.output.name) / record['group'] / 'P009'
+                self.assertTrue((folder / 'subject.json').is_file())
+                self.assertFalse((folder / 'S1').exists())
+                self.op.fields['subject'].set('P010')
+                self.op.load_registration()
+                self.op.fields['subject'].set('P009')
+                self.op.load_registration()
+                self.assertEqual(self.op.fields['cap'].get(), 'M / 64 canais')
+                self.assertEqual(self.op.fields['laterality'].get(), 'Esquerda')
+                self.assertIn('P009', [r['subject'] for r in read_subjects(self.output.name)])
+                self.op.root.geometry('960x660')
+                self.op.configuration_tabs.select(1)
+                self.op.root.update()
+                page = self.op.root.nametowidget(self.op.configuration_tabs.tabs()[1])
+                button = next(
+                    w
+                    for w in page.winfo_children()
+                    if w.winfo_class() == 'TButton'
+                    and w.cget('text') == 'Salvar cadastro do sujeito'
+                )
+                self.assertLessEqual(button.winfo_y() + button.winfo_height(), page.winfo_height())
+            except Exception as exc:
+                failures.append(exc)
+            finally:
+                self.op.action.set('stop')
+
+        self.op.root.after(100, register)
+        self.assertFalse(self.op.configure(self.cfg))
+        self.assertEqual(failures, [])
+
+    def test_shipped_desktop_data_root_restores_the_last_selected_folder(self):
+        from bci_core.catalog import save_preferences, save_subject
+
+        save_subject(self.output.name, dict(group='CTRL', subject='P003', laterality='left'))
+        save_preferences(self.output.name, 'CTRL', 'P003', 2)
+        self.cfg.experiment.log_root = str(Path.home() / 'Área de trabalho' / 'BCI_Dados')
+        captured = {}
+
+        def inspect():
+            captured.update(
+                {
+                    key: self.op.fields[key].get()
+                    for key in ['data_root', 'group', 'subject', 'session']
+                }
+            )
+            self.op.action.set('stop')
+
+        self.op.root.after(100, inspect)
+        self.assertFalse(self.op.configure(self.cfg))
+        self.assertEqual(
+            captured, dict(data_root=self.output.name, group='CTRL', subject='P003', session='2')
+        )
+
+    def test_summary_refresh_removes_deleted_files_without_retraining(self):
+        self.op.cfg = self.cfg
+        signal = self.summary_recording('IM_treino')
+        failures = []
+
+        def remove():
+            try:
+                view = self.op.summary
+                self.assertEqual(len(view.rows), 1)
+                signal.unlink()
+                view.refresh()
+                self.assertEqual(view.rows, [])
+                self.assertEqual(view.table.get_children(), ())
+                self.assertIn('0 blocos', view.overview.get())
+                self.assertEqual(str(view.comment.cget('state')), 'disabled')
+            except Exception as exc:
+                failures.append(exc)
+            finally:
+                self.op.action.set('stop')
+
+        self.op.root.after(100, remove)
+        self.op.finish('Sessão finalizada.')
+        self.assertEqual(failures, [])
+
+    def test_expanded_signal_reuses_the_snapshot_without_another_reader(self):
+        import numpy as np
+        from bci_core.signal_preview import SignalPreview
+
+        preview = SignalPreview(self.op.body)
+        snapshot = dict(
+            times=np.arange(100) / 100, values=np.zeros((100, 2)), channels=['C3', 'C4']
+        )
+        preview.update(snapshot)
+        self.assert_one_window()
+        preview.enlarge()
+        self.op.root.update()
+        expanded = preview.expanded
+        self.assertIs(expanded.snapshot, snapshot)
+        preview.enlarge()
+        self.assertIs(preview.expanded, expanded)
+        newer = dict(snapshot, values=np.ones((100, 2)))
+        preview.update(newer)
+        self.assertIs(expanded.snapshot, newer)
+        expanded.frame.winfo_toplevel().destroy()
+        preview.update(snapshot)
+        self.assertIsNone(preview.expanded)
+
     def test_registered_session_reloads_after_restart_and_laterality_selects_control_leg(self):
         from bci_core.catalog import save_session, save_preferences
         from bci_core.operator import Operator
@@ -197,7 +311,9 @@ class PersistentOperatorTests(unittest.TestCase):
         self.op.root.after(50, lambda: self.op.action.set('next'))
         self.assertEqual(self.op.review_block('Repouso', {'complete':True}, {'issues':[]}, {'not_applicable':True}), 'next')
         tabs = next(w for w in self.op.body.winfo_children() if w.winfo_class() == 'TNotebook')
-        self.assertEqual([tabs.tab(tab, 'text') for tab in tabs.tabs()], ['Snapshot do sinal', 'Sincronização'])
+        self.assertEqual(
+            [tabs.tab(tab, 'text') for tab in tabs.tabs()], ['Sinal EEG', 'Sincronização']
+        )
 
     def test_resting_duration_can_be_changed_to_30_seconds_in_parameters(self):
         self.op.cfg = self.cfg
@@ -412,7 +528,9 @@ class PersistentOperatorTests(unittest.TestCase):
                 tabs.select(1)
                 self.op.root.update()
                 image_labels = self.op.root.nametowidget(tabs.tabs()[1]).winfo_children()
-                self.assertGreater(image_labels[0].image.width(), 380)
+                self.assertGreater(
+                    next(w.image.width() for w in image_labels if hasattr(w, 'image')), 380
+                )
                 assertions.append(True)
             except Exception as exc:
                 assertions.append(exc)
@@ -456,7 +574,9 @@ class PersistentOperatorTests(unittest.TestCase):
         self.op.root.after(50, lambda: self.op.action.set('next'))
         self.assertEqual(self.op.review_block('Teste de aquisição', {'complete': True}, {'issues': []}, {}), 'next')
         tabs = next(w for w in self.op.body.winfo_children() if w.winfo_class() == 'TNotebook')
-        self.assertEqual([tabs.tab(tab, 'text') for tab in tabs.tabs()], ['Snapshot do sinal', 'Sincronização'])
+        self.assertEqual(
+            [tabs.tab(tab, 'text') for tab in tabs.tabs()], ['Sinal EEG', 'Sincronização']
+        )
         self.op.update_timing_preview({'rows': [{'stream':'working','age_s':-.5,'elapsed_s':3.,'write_lag_s':.01,'queue_batches':0}],
                                        'options':{'max_age_s':.25}, 'phase':'diagnostic', 'health':{'reason':'Teste temporal'}})
         self.assertIn('no futuro', self.op.timing_preview.metrics.get())

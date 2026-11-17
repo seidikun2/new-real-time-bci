@@ -122,8 +122,8 @@ def confusion_figure(cv, class_map, path):
     names = [inverse.get(value, str(value)) for value in cv.get('class_order', range(len(matrix)))]
     totals = matrix.sum(axis=1, keepdims=True)
     normalized = np.divide(matrix, totals, out=np.zeros(matrix.shape, float), where=totals != 0)
-    with plt.rc_context({'font.size': 10, 'axes.spines.top': False, 'axes.spines.right': False}):
-        fig, axes = plt.subplots(1, 2, figsize=(10, 4.2), layout='constrained')
+    with plt.rc_context({'font.size': 13, 'axes.spines.top': False, 'axes.spines.right': False}):
+        fig, axes = plt.subplots(1, 2, figsize=(13, 5.5), layout='constrained')
         for axis, values, title, fmt in zip(axes, [matrix, normalized], ['Contagem de janelas', 'Proporção por classe real'], ['d', '.0%']):
             ConfusionMatrixDisplay(values, display_labels=names).plot(ax=axis, colorbar=False, cmap='Blues', values_format=fmt)
             axis.set(title=title, xlabel='Classe predita', ylabel='Classe real')

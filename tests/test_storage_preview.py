@@ -10,13 +10,30 @@ from pylsl import local_clock
 
 from bci_core.config_models import load_config
 from bci_core.storage import PROJECT_ROOT, external_path, prepare_data_root
-from bci_core.signal_preview import signal_snapshot, display_envelope
+from bci_core.signal_preview import signal_snapshot, display_envelope, display_traces
 from bci_core.receive_data_log import make_log_dir, BlockRecorder
 from bci_core.acquisition import set_source
 from test_acquisition_report import eeg_info
 
 
 class StorageAndPreviewTests(unittest.TestCase):
+
+    def test_display_traces_preserve_original_time_order_and_extrema(self):
+        times = np.arange(1001) / 500.0
+        values = np.random.default_rng(3).normal(size=(1001, 64))
+        values[173, 5] = 100.0
+        values[172, 5] = -100.0
+        original = values.copy()
+        tt, vv = display_traces(times, values, points=200)
+        self.assertTrue(np.all(np.diff(tt, axis=0) >= 0))
+        self.assertLessEqual(len(tt), 202)
+        self.assertEqual(vv[:, 5].max(), 100.0)
+        self.assertEqual(vv[:, 5].min(), -100.0)
+        for channel in range(64):
+            indices = np.searchsorted(times, tt[:, channel])
+            np.testing.assert_array_equal(vv[:, channel], values[indices, channel])
+        np.testing.assert_array_equal(values, original)
+
     def setUp(self):
         self.cfg = load_config(str(PROJECT_ROOT / 'config.yaml'))
 

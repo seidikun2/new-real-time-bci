@@ -10,25 +10,25 @@ STIM_CLASS_ORDER = ("LEFT_MI_STIM", "RIGHT_MI_STIM", REST_STIM_LABEL, "BOTH_MI_S
 
 CLASS_SPECS: dict[str, dict[str, Any]] = {
     "LEFT_MI_STIM": {
-        "display": "LEFT",
+        "display": "Perna esquerda",
         "control": "left_leg",
         "default_code": 3,
         "decoder_channel": "left",
     },
     "BOTH_MI_STIM": {
-        "display": "BOTH",
+        "display": "Duas pernas",
         "control": "both_legs",
         "default_code": 7,
         "decoder_channel": "both",
     },
     "RIGHT_MI_STIM": {
-        "display": "RIGHT",
+        "display": "Perna direita",
         "control": "right_leg",
         "default_code": 4,
         "decoder_channel": "right",
     },
     "REST_STIM": {
-        "display": "REST",
+        "display": "Repouso",
         "control": "rest",
         "default_code": 8,
         "decoder_channel": "rest",

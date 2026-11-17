@@ -27,6 +27,29 @@ class PipelineTests(unittest.TestCase):
         self.cfg = load_config(str(ROOT / 'config.yaml'))
         set_source(self.cfg, 'simulator')
 
+    def test_pca_cluster_labels_are_portuguese_and_black(self):
+        from matplotlib.axes import Axes
+        from bci_core.representation_feedback import prepare_training_representation
+
+        rng = np.random.default_rng(8)
+        points = rng.normal(size=(24, 2))
+        labels = np.repeat([0, 1], 12)
+        calls = []
+        original = Axes.text
+
+        def capture(ax, x, y, text, *args, **kwargs):
+            if text in {'Perna esquerda', 'Repouso'}:
+                calls.append((text, kwargs.get('color'), kwargs.get('fontsize')))
+            return original(ax, x, y, text, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as folder, patch.object(Axes, 'text', capture):
+            prepare_training_representation(
+                points, labels, self.cfg, folder, class_labels={0: 'Perna esquerda', 1: 'Repouso'}
+            )
+            self.assertTrue((Path(folder) / 'pca_check.png').is_file())
+        self.assertEqual({text for text, _, _ in calls}, {'Perna esquerda', 'Repouso'})
+        self.assertTrue(all(color == 'black' and size >= 14 for _, color, size in calls))
+
     def test_protocol_balanced_repeatable_and_timing(self):
         self.cfg._raw_config['protocol']['trials_per_class'] = 15
         schedule = build_schedule(self.cfg)

@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class RestingStateTests(unittest.TestCase):
     def setUp(self):
         self.cfg = load_config(str(ROOT/'config.yaml'))
+        self.cfg._raw_config['resting_state']['duration_s'] = 45.0
 
     def test_resting_is_first_in_full_protocol_and_can_be_skipped_when_resuming(self):
         self.assertEqual(protocol_blocks(self.cfg)[0][2], 'resting')
@@ -30,6 +31,7 @@ class RestingStateTests(unittest.TestCase):
         self.assertEqual(protocol_blocks(self.cfg)[0][2], 'train')
 
     def test_45_seconds_default_and_30_seconds_configurable(self):
+        self.cfg._raw_config['resting_state'].pop('duration_s')
         self.assertEqual([event.duration for event in resting_schedule(self.cfg)], [45., 45., 0.])
         self.cfg._raw_config['resting_state']['duration_s'] = 30.
         self.assertEqual([event.duration for event in resting_schedule(self.cfg)], [30., 30., 0.])

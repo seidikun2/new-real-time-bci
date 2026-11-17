@@ -63,6 +63,8 @@ def open_path(path):
 
 class SessionSummary:
     def __init__(self, parent, cfg):
+        self.cfg = cfg
+        self.focus_after = None
         self.root = external_path(cfg.experiment.log_root)
         self.rows, warning = session_recordings(cfg)
         self.selected = None
@@ -71,15 +73,11 @@ class SessionSummary:
         self.loading = False
         self.frame = ttk.Frame(parent)
         self.frame.pack(fill='both', expand=True)
-        exp = cfg.experiment
-        evaluated = sum(percentage(row.get('cv_accuracy')) != '—' for row in self.rows)
-        partial = sum(row.get('status') == 'partial' for row in self.rows)
-        ttk.Label(
-            self.frame,
-            text=f'{exp.group} / {exp.subject_id} / S{exp.session_id} · '
-            f'{len(self.rows)} blocos · {evaluated} com CV · {partial} interrompidos',
-            style='Muted.TLabel',
-        ).pack(anchor='w', pady=(0, 8))
+        self.overview = tk.StringVar()
+        self.update_overview()
+        ttk.Label(self.frame, textvariable=self.overview, style='Muted.TLabel').pack(
+            anchor='w', pady=(0, 8)
+        )
         folder = ttk.Frame(self.frame)
         folder.pack(fill='x', pady=(0, 12))
         ttk.Label(folder, text='Pasta da sessão').pack(side='left', padx=(0, 10))
@@ -99,6 +97,8 @@ class SessionSummary:
         ttk.Label(self.frame, textvariable=self.status, style='Muted.TLabel', wraplength=950).pack(
             side='bottom', anchor='w', pady=(4, 0)
         )
+        self.top = parent.winfo_toplevel()
+        self.focus_binding = self.top.bind('<FocusIn>', self.focus_returned, add='+')
         self.tabs = ttk.Notebook(self.frame)
         self.tabs.pack(fill='both', expand=True)
         blocks_page = ttk.Frame(self.tabs)
@@ -113,8 +113,8 @@ class SessionSummary:
             ('group', 'Grupo', 72),
             ('subject', 'Sujeito', 100),
             ('session', 'Sessão', 70),
-            ('time', 'Data / horário', 165),
-            ('block', 'Bloco', 205),
+            ('time', 'Data / horário', 215),
+            ('block', 'Bloco', 260),
             ('stage', 'Etapa', 80),
             ('status', 'Estado', 120),
             ('cv', 'CV · média ± DP', 145),
@@ -175,9 +175,10 @@ class SessionSummary:
         self.report_button.pack(side='left', padx=8)
         ttk.Button(
             actions,
-            text='Abrir tabela CSV',
-            command=lambda: self.open(self.root / 'dataset_index.csv'),
+            text='Abrir tabela de dados',
+            command=lambda: self.open(self.root / 'dados.csv'),
         ).pack(side='left')
+        ttk.Button(actions, text='Atualizar tabela', command=self.refresh).pack(side='left', padx=8)
         self.note_title = tk.StringVar(value='Selecione um bloco na aba Blocos da sessão.')
         ttk.Label(notes_page, textvariable=self.note_title, wraplength=900).pack(
             anchor='w', pady=(0, 8)
@@ -208,6 +209,71 @@ class SessionSummary:
             self.table.selection_set(last)
             self.table.see(last)
             self.select()
+
+    def update_overview(self):
+        exp = self.cfg.experiment
+        evaluated = sum(percentage(row.get('cv_accuracy')) != '—' for row in self.rows)
+        partial = sum(row.get('status') == 'partial' for row in self.rows)
+        self.overview.set(
+            f'{exp.group} / {exp.subject_id} / S{exp.session_id} · '
+            f'{len(self.rows)} blocos · {evaluated} com CV · {partial} interrompidos'
+        )
+
+    def focus_returned(self, event):
+        if event.widget == self.top and self.frame.winfo_exists():
+            if self.focus_after is not None:
+                self.frame.after_cancel(self.focus_after)
+            self.focus_after = self.frame.after(150, self.refresh)
+
+    def refresh(self):
+        self.focus_after = None
+        if not self.flush():
+            return
+        selected_run = (
+            self.rows[int(self.selected)].get('run_id') if self.selected is not None else None
+        )
+        try:
+            rows, warning = session_recordings(self.cfg)
+        except (OSError, ValueError) as exc:
+            self.status.set(f'Não foi possível atualizar: {exc}')
+            return
+        self.rows = rows
+        self.update_overview()
+        self.selected = None
+        self.table.delete(*self.table.get_children())
+        for i, row in enumerate(rows):
+            self.table.insert(
+                '', 'end', iid=str(i), values=self.values(row), tags=(row.get('status', ''),)
+            )
+        if rows:
+            selected = next(
+                (str(i) for i, row in enumerate(rows) if row.get('run_id') == selected_run),
+                str(len(rows) - 1),
+            )
+            self.table.selection_set(selected)
+            self.table.see(selected)
+            self.select()
+        else:
+            self.comment.configure(state='normal')
+            self.comment.delete('1.0', 'end')
+            self.comment.edit_modified(False)
+            self.comment.configure(state='disabled')
+            self.data_folder.set('')
+            self.detail.set('Nenhum bloco presente na pasta desta sessão.')
+            self.folder_button.configure(state='disabled')
+            self.report_button.configure(state='disabled')
+        self.status.set(
+            warning or 'Tabela atualizada a partir dos arquivos presentes na pasta de dados.'
+        )
+
+    def close(self):
+        if self.focus_after is not None:
+            self.frame.after_cancel(self.focus_after)
+            self.focus_after = None
+        if self.focus_binding is not None:
+            self.top.unbind('<FocusIn>', self.focus_binding)
+            self.focus_binding = None
+        self.flush()
 
     def values(self, row):
         accuracy = percentage(row.get('cv_accuracy'))

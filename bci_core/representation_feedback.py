@@ -22,7 +22,8 @@ def prepare_training_representation(X_base, y, cfg, out_dir, class_labels=None, 
         limits.append([low-margin, high+margin])
     folder = Path(out_dir)
     folder.mkdir(parents=True, exist_ok=True)
-    fig, ax = plt.subplots(figsize=(6, 6), dpi=130)
+    fig, ax = plt.subplots(figsize=(9, 6.5), dpi=140)
+    ax.tick_params(labelsize=14)
     fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
     size = max(30, min(300, int(options.get('grid_size', 180))))
     xx, yy = np.meshgrid(np.linspace(*limits[0], size), np.linspace(*limits[1], size))
@@ -54,13 +55,23 @@ def prepare_training_representation(X_base, y, cfg, out_dir, class_labels=None, 
             pass
         center = np.mean(points, axis=0)
         if options.get('show_labels', True):
-            ax.text(*center, labels.get(int(cls), str(cls)), color=color, weight='bold', ha='center')
+            ax.text(
+                *center,
+                labels.get(int(cls), str(cls)),
+                color='black',
+                fontsize=18,
+                bbox=dict(facecolor='white', alpha=0.8, edgecolor='none', pad=2),
+                weight='bold',
+                ha='center'
+            )
         row = details.get(int(cls), {})
         regions.append({'event_label': row.get('event_label', str(cls)),
                         'display_label': labels.get(int(cls), str(cls)), 'center': center.tolist(), 'regions': contours})
     ax.set(xlim=limits[0], ylim=limits[1])
     fig.subplots_adjust(left=.13, right=.96, bottom=.12, top=.9)
-    ax.set(xlabel='PC1', ylabel='PC2', title='Mapa PCA · verificação do bloco')
+    ax.set_xlabel('Componente principal 1', fontsize=16)
+    ax.set_ylabel('Componente principal 2', fontsize=16)
+    ax.set_title('Mapa PCA · verificação do bloco', fontsize=18)
     ax.grid(alpha=.15)
     fig.savefig(folder / 'pca_check.png')
     fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
